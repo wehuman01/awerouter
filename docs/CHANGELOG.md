@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.9
+## v0.4.9 - 2026-08-24
 
 Local models become first-class routing destinations: `auth` is now optional in providers.json, so local inference servers (Ollama, LM Studio, llama.cpp, vLLM) take their place next to API-key providers under the same protocol groups — and since flash→pro fallback already fires on connection errors, a flash=local / pro=cloud profile gives you local-first routing with a transparent cloud safety net. Ollama ≥ 0.14 speaks the Anthropic protocol natively, so even Claude Code profiles can put a local model on flash.
 
