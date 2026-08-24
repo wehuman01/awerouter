@@ -4,7 +4,7 @@
 
 Here is something most routing tools will not tell you up front: they are locked to one wire protocol and one provider ecosystem. An Anthropic-only router cannot speak to a GLM endpoint. An OpenAI-only router cannot front Claude Code. If you want to mix StepFun for cheap work and Anthropic for hard work, you need two tools.
 
-awerouter does not have that limitation. It speaks three protocols natively — Anthropic Messages, OpenAI Chat Completions, OpenAI Responses — and within a single routing profile you can mix as many providers as you like across those protocols. The router does not care what is on the other end. It only cares which end is cheap and which one is strong.
+awerouter does not have that limitation. It speaks three protocols natively — Anthropic Messages, OpenAI Chat Completions, OpenAI Responses — and within a single routing profile you can mix as many providers as you like inside one protocol group. Crossing protocols means starting another profile of the same router, not adopting a second tool. The router does not care what is on the other end. It only cares which end is cheap and which one is strong.
 
 GitHub: [github.com/mugpeng/awerouter](https://github.com/mugpeng/awerouter)
 
@@ -37,9 +37,9 @@ GLM, for instance, uses `https://open.bigmodel.cn/api/coding/paas/v4` for chat c
 
 ## The Client Does Not Need to Know
 
-From the client's perspective, nothing changed. Claude Code still points at `ANTHROPIC_BASE_URL=http://127.0.0.1:20128`. Codex still talks to `OPENAI_BASE_URL`. OpenCode uses its own `OPENCODE_BASE_URL`. The awerouter daemon terminates the native protocol, applies the routing decision, and forwards the request upstream in the same wire format.
+From the client's perspective, nothing changed. Claude Code still points at `ANTHROPIC_BASE_URL=http://127.0.0.1:20128`. Codex sets the same address as its `base_url` in `config.toml`. OpenCode points its own OpenAI-compatible provider config at it too. The awerouter daemon terminates the native protocol, applies the routing decision, and forwards the request upstream in the same wire format.
 
-This means you can run Claude Code, Codex, and OpenCode against the same daemon on the same machine, each through its own routing profile, each mixing providers differently. The router is the common layer. The clients never see each other.
+Each profile runs as its own daemon instance, and the instances share one config directory. Start several on the same machine and they line up on sequential ports — 20128, 20129, ... — so Claude Code, Codex, and OpenCode each sit in front of their own routing profile, each mixing providers differently. The router is the common layer. The clients never see each other.
 
 ## Protocol-Agnostic Routing
 
@@ -51,7 +51,7 @@ Three protocol-specific extractors produce the same `InspectResult`:
 - `has_image` — any image block present
 - `has_web_search` — `web_search_*` tool declared
 - `file_search_tokens` — tokens from grep/glob/ls results only
-- `last_tool` — most recent tool call name
+- `last_tools` — the trailing batch of parallel tool calls, with `last_phase` flagging whether any call in it changed code
 
 One router. Three extractors. Same decision.
 
@@ -71,4 +71,4 @@ The first generation of LLM proxies assumed a one-to-one relationship: one clien
 
 awerouter's design treats the protocol layer as transport and the provider mix as strategy. They are independent axes. You can change providers without touching routing logic. You can change routing logic without touching providers. The four-layer decision pipeline does not care which provider sits behind `flash` or `pro` — it only cares that `flash` exists and `pro` exists.
 
-That separation is what lets one router, one daemon, one config directory serve every agent on your machine, across every provider you use, in every protocol they speak.
+That separation is what lets one router and one config directory — one daemon instance per profile — serve every agent on your machine, across every provider you use, in every protocol they speak.

@@ -18,11 +18,11 @@ Every request goes through a first-match-wins pipeline. Four layers, each asking
 
 **Can flash even do this?** If the request declares a `web_search` tool, the question is capability, not difficulty. Many cheap providers do not support it. Route to a provider that can.
 
-**What tier did the client pick?** Claude Code's `/model` picker already classifies tasks: background work versus think work. When the client sends `"flash"` or `"think"` as the model id, that is an instruction, not a signal to interpret. Route accordingly.
+**What tier did the client pick?** Claude Code's `/model` picker already classifies tasks: background work versus think work. When the client sends `"flash"` or `"pro"` as the model id — the default tier labels, renameable in settings — that is an instruction, not a signal to interpret. Route accordingly.
 
 **How big is this?** Token count against a threshold. If the request carries more content than the dial allows — or contains an image — route to the strong tier. This is the only layer that estimates difficulty, and the estimate is a tape measure, not a classifier.
 
-**Did code just change?** Structure cannot see the turn that decides an edit — by the time a tool call exists to read, the decision is already made. What it can do is react: the turn right after an edit is the review turn — verify the diff, decide the next file. That turn goes to the strong tier; the cheap one drafts, the strong one reviews. The most recent tool call is an honest signal, and it costs nothing to read.
+**Did code just change?** Structure cannot see the turn that decides an edit — by the time a tool call exists to read, the decision is already made. What it can do is react: the turn right after an edit is the review turn — verify the diff, decide the next file. That turn goes to the strong tier; the cheap one drafts, the strong one reviews. The trailing batch of tool calls is an honest signal, and it costs nothing to read.
 
 If no layer fires, the default is the cheap tier. Innocent until proven expensive.
 
@@ -33,7 +33,7 @@ Here is the core insight: everything the router needs to decide is already prese
 - The `tools` array tells you what capabilities the request needs.
 - The `model` field tells you what tier the client chose.
 - The message content tells you how much context is in play.
-- The last tool call tells you whether code just changed.
+- The trailing batch of tool calls tells you whether code just changed.
 
 None of this requires interpretation. None of it requires a model call. The router reads the structure, makes a decision, and forwards the request — all in the time it takes to make one local HTTP round-trip.
 
@@ -47,7 +47,7 @@ So search-result tokens are counted at a discount before the threshold compariso
 
 ## The Router Does Not Read Your Conversations
 
-The most unusual constraint in the design: the response path is opaque. The router never parses, buffers, or inspects what comes back from upstream. Response bytes stream from provider to client untouched.
+The most unusual constraint in the design: the response body is opaque. The router never parses, buffers, or inspects the bytes that come back from upstream — they stream from provider to client untouched. The one thing it reads is the status code, and only to know whether a cheap-tier failure deserves rescue by the strong tier. That reading costs nothing either.
 
 This forecloses an entire category of "smarter" routers — ones that read the output, judge its quality, and adjust routing in a feedback loop. Without reading responses, there is no ground truth on quality, so there is no honest way to build a quality-sensitive router. awerouter does not pretend otherwise.
 
