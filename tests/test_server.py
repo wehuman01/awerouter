@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import socket
 
 import pytest
@@ -733,8 +734,15 @@ class TestServePortBinding:
         try:
             self._serve_briefly(port)
             out = capsys.readouterr().out
-            assert f"port {port} busy; using next free port {port + 1}" in out
-            assert f"listening on 127.0.0.1:{port + 1}" in out
+            # The next port is only *expected* to be free — a CI runner may
+            # hold it with a lingering socket from an earlier test — so assert
+            # "scanned up to some free port" rather than exactly port + 1.
+            note = re.search(r"using next free port (\d+)", out)
+            listen = re.search(r"listening on 127\.0\.0\.1:(\d+)", out)
+            assert f"port {port} busy" in out
+            assert note and listen
+            assert int(note.group(1)) > port
+            assert note.group(1) == listen.group(1)
         finally:
             s.close()
 
