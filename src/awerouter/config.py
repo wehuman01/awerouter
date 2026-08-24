@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import ipaddress
 import json
 import os
 import re
@@ -44,6 +45,26 @@ def detect_auth_header(base_url: str) -> str:
     netloc = urlparse(base_url).netloc.lower()
     is_anthropic = netloc == "api.anthropic.com" or netloc.endswith(".anthropic.com")
     return "x-api-key" if is_anthropic else "authorization"
+
+
+def is_loopback_url(base_url: str) -> bool:
+    """True when base_url points at this machine — local model servers that
+    need no auth (Ollama, LM Studio, llama.cpp, vLLM on localhost).
+
+    Parsed as an IP (whole 127/8 and ::1 are loopback) rather than prefix
+    matching, so "127.0.0.1.evil.com" does not count as local.
+    """
+    netloc = urlparse(base_url).netloc.lower()
+    if "@" in netloc:  # strip userinfo
+        netloc = netloc.rsplit("@", 1)[1]
+    if netloc.startswith("["):  # [::1]:port
+        host = netloc[1:].split("]", 1)[0]
+    else:
+        host = netloc.rsplit(":", 1)[0] if netloc.rsplit(":", 1)[-1].isdigit() else netloc
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
 
 
 # ---------------------------------------------------------------------------
@@ -170,9 +191,10 @@ def load_providers(path: Optional[Path] = None) -> dict[str, dict[str, Provider]
             if not isinstance(entry, dict):
                 die(f"provider '{protocol}.{name}' must be an object")
             base_url = entry.get("base_url")
-            auth = entry.get("auth")
-            if not base_url or not auth:
-                die(f"provider '{protocol}.{name}' missing base_url or auth")
+            # auth absent / null / "" = no-auth upstream (local model servers).
+            auth = entry.get("auth") or None
+            if not base_url:
+                die(f"provider '{protocol}.{name}' missing base_url")
             auth_header = entry.get("auth_header") or detect_auth_header(base_url)
             group_providers[name] = Provider(
                 name=name, base_url=base_url, auth=auth, auth_header=auth_header,
@@ -396,14 +418,17 @@ def init_config() -> None:
     shutil.copy2(TEMPLATE_ROUTING, routing_path())
 
 
-def save_provider(protocol: str, name: str, base_url: str, auth: str) -> None:
-    """Append one provider entry to providers.json."""
+def save_provider(protocol: str, name: str, base_url: str, auth: "str | None") -> None:
+    """Append one provider entry to providers.json (auth None = local, key omitted)."""
     path = providers_path()
     data = _load_json(path, "providers.json")
     group = data.setdefault(protocol, {})
     if name in group:
         die(f"provider already exists: {protocol}.{name}")
-    group[name] = {"base_url": base_url, "auth": auth}
+    entry = {"base_url": base_url}
+    if auth:
+        entry["auth"] = auth
+    group[name] = entry
     backup_file(path)
     path.write_text(json.dumps(data, indent=2) + "\n")
 
@@ -436,7 +461,9 @@ def format_providers_display(all_providers: dict[str, dict[str, Provider]]) -> s
         protocol_display = {}
         for name, p in group.items():
             entry = {"base_url": p.base_url, "auth_header": p.auth_header}
-            if ENV_REF_RE.fullmatch(str(p.auth)):
+            if not p.auth:
+                entry["auth"] = None  # no-auth upstream (local model server)
+            elif ENV_REF_RE.fullmatch(str(p.auth)):
                 entry["auth"] = str(p.auth)
             else:
                 entry["auth"] = "<set>"

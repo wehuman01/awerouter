@@ -20,6 +20,7 @@ from awerouter.config import (
     config_dir,
     die,
     init_config,
+    is_loopback_url,
     load_default_profile,
     load_for_profile,
     load_providers,
@@ -125,8 +126,19 @@ def add():
         if pname is None:
             pname = click.prompt("  new provider name")
             base_url = click.prompt(f"  {pname} base_url")
-            auth_var = click.prompt(f"  {pname} auth env var name (stored as ${{VAR}})")
-            save_provider(protocol, pname, base_url, f"${{{auth_var}}}")
+            auth_var = click.prompt(
+                f"  {pname} auth env var name (empty for local / no-auth)", default=""
+            )
+            if auth_var:
+                save_provider(protocol, pname, base_url, f"${{{auth_var}}}")
+            else:
+                if not is_loopback_url(base_url) and not click.confirm(
+                    f"  {pname} is off-machine and has no auth — cloud APIs need one. "
+                    "Add anyway?",
+                    default=False,
+                ):
+                    die("aborted — rerun 'awerouter add' to retry")
+                save_provider(protocol, pname, base_url, None)
             known.add(pname)
         model = click.prompt(f"{tier} model id")
         return f"{pname},{model}"

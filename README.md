@@ -167,6 +167,37 @@ The same provider often uses a different path per protocol — GLM for instance:
 
 The auth header is **auto-detected from `base_url`**: `anthropic.com` → `x-api-key` (bare token); everyone else → `Authorization` (auto-prefixes `Bearer `). No `auth_header` field needed unless the heuristic is wrong.
 
+### Local models (no auth)
+
+Local model servers don't need a key — just omit `auth` and the request goes upstream with no auth header at all:
+
+```json
+{
+  "anthropic": {
+    "ollama":    { "base_url": "http://127.0.0.1:11434" },
+    "anthropic": { "base_url": "https://api.anthropic.com", "auth": "${ANTHROPIC_KEY}" }
+  },
+  "openai-chat": {
+    "ollama": { "base_url": "http://127.0.0.1:11434/v1" }
+  }
+}
+```
+
+Works with any OpenAI-compatible server (Ollama, LM Studio, llama.cpp, vLLM) under `openai-chat`; Ollama ≥ 0.14 also speaks the Anthropic protocol, so it can sit in the `anthropic` group next to Claude Code. Note the path convention: `openai-chat` base_urls carry the `/v1` segment, `anthropic` ones don't — same as their cloud counterparts above.
+
+Local and cloud mix freely in one profile — cheap drafting on local, hard calls on cloud:
+
+```json
+"destinations": {
+  "flash": "ollama,qwen3-coder:30b",
+  "pro":   "anthropic,claude-opus-5"
+}
+```
+
+If the local server is down, the flash→pro fallback kicks in on connection errors and requests transparently go to the cloud — local-first with a cloud safety net, no extra config.
+
+Guard against a forgotten key: a provider with no `auth` whose `base_url` is **not** on localhost gets a warning at serve start (`awerouter add` asks for confirmation in the same case). LAN servers without auth are legitimate — the warning is informational, not fatal.
+
 **routing.json** — strategy, no secrets (safe to commit):
 
 ```json

@@ -13,6 +13,7 @@ from awerouter.server import (
     _agent_from_ua,
     _client_hint,
     _loopback_proxy_warning,
+    _noauth_warning,
     _resolve_auto_threshold,
     _serve,
     create_app,
@@ -242,6 +243,38 @@ class TestAwerouter:
                     # flash provider uses ${STEPFUN_KEY}="flash-key", authorization header
                     # → auto-prefixed to "Bearer flash-key"
                     assert captured["authorization"] == "Bearer flash-key"
+            finally:
+                await up_server.close()
+        run(t())
+
+    def test_noauth_provider_sends_no_auth_headers(self):
+        """Local no-auth provider: the client's incoming key is dropped,
+        nothing is injected — upstream sees a clean request."""
+        async def t():
+            captured = {}
+
+            async def up(request):
+                captured["x_api_key"] = request.headers.get("x-api-key")
+                captured["authorization"] = request.headers.get("authorization")
+                return web.json_response({"model": "x"})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                providers = _providers(up_server.port)
+                providers["stepfun"] = Provider(
+                    "stepfun", f"http://127.0.0.1:{up_server.port}", None)
+                app = create_app(providers, ROUTING, SETTINGS)
+                async with TestClient(TestServer(app)) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "flash",
+                        "messages": [{"content": "hi"}],
+                    }, headers={"x-api-key": "client-key"})
+                    assert r.status == 200
+                    assert captured["x_api_key"] is None
+                    assert captured["authorization"] is None
             finally:
                 await up_server.close()
         run(t())
@@ -641,6 +674,21 @@ class TestLoopbackProxyWarning:
         monkeypatch.setenv("http_proxy", "http://127.0.0.1:7890")
         monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
         assert _loopback_proxy_warning() is None
+
+
+class TestNoauthWarning:
+    def test_loopback_silent(self):
+        providers = {"ollama": Provider("ollama", "http://127.0.0.1:11434", None)}
+        assert _noauth_warning(providers) is None
+
+    def test_off_machine_warns(self):
+        providers = {"stepfun": Provider("stepfun", "https://api.stepfun.com", None)}
+        w = _noauth_warning(providers)
+        assert w is not None and "stepfun" in w
+
+    def test_off_machine_with_auth_silent(self):
+        providers = {"stepfun": Provider("stepfun", "https://api.stepfun.com", "${K}")}
+        assert _noauth_warning(providers) is None
 
 
 class TestServePortBinding:

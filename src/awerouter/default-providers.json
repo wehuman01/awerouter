@@ -1,11 +1,13 @@
 {
   "anthropic": {
     "stepfun":   { "base_url": "https://api.stepfun.com/step_plan", "auth": "${STEPFUN_AUTH_TOKEN}" },
-    "anthropic": { "base_url": "https://api.anthropic.com",          "auth": "${ANTHROPIC_KEY}" }
+    "anthropic": { "base_url": "https://api.anthropic.com",          "auth": "${ANTHROPIC_KEY}" },
+    "ollama":    { "base_url": "http://127.0.0.1:11434" }
   },
   "openai-chat": {
     "stepfun": { "base_url": "https://api.stepfun.com/step_plan/v1",     "auth": "${STEPFUN_AUTH_TOKEN}" },
-    "glm":     { "base_url": "https://open.bigmodel.cn/api/coding/paas/v4", "auth": "${GLM_API_KEY}" }
+    "glm":     { "base_url": "https://open.bigmodel.cn/api/coding/paas/v4", "auth": "${GLM_API_KEY}" },
+    "ollama":  { "base_url": "http://127.0.0.1:11434/v1" }
   },
   "openai-responses": {
     "openai": { "base_url": "https://api.openai.com/v1",        "auth": "${OPENAI_API_KEY}" },

@@ -10,7 +10,8 @@ from typing import Optional
 class Provider:
     name: str
     base_url: str
-    auth: str
+    # None = no-auth upstream (local model servers); request goes out without any auth header.
+    auth: Optional[str]
     # Auto-detected from base_url at load time (anthropic.com → x-api-key, else authorization).
     # Explicit override only when the heuristic is wrong.
     auth_header: str = "authorization"

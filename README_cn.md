@@ -167,6 +167,37 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 
 鉴权头**根据 `base_url` 自动判断**：`anthropic.com` → `x-api-key`（裸 token）；其他 → `Authorization`（自动补 `Bearer `）。除非启发式判断错了，否则不需要填 `auth_header`。
 
+### 本地模型（免认证）
+
+本地推理服务不需要密钥——`auth` 直接省略，请求会以无认证头的干净形态发往上游：
+
+```json
+{
+  "anthropic": {
+    "ollama":    { "base_url": "http://127.0.0.1:11434" },
+    "anthropic": { "base_url": "https://api.anthropic.com", "auth": "${ANTHROPIC_KEY}" }
+  },
+  "openai-chat": {
+    "ollama": { "base_url": "http://127.0.0.1:11434/v1" }
+  }
+}
+```
+
+任何 OpenAI 兼容服务（Ollama、LM Studio、llama.cpp、vLLM）都能挂在 `openai-chat` 组；Ollama ≥ 0.14 原生支持 Anthropic 协议，可以和 Claude Code 同在 `anthropic` 组。注意路径约定与云端一致：`openai-chat` 的 base_url 带 `/v1` 段，`anthropic` 的不带。
+
+本地和云端在同一个 profile 里随意混排——便宜的活给本地，难啃的给云端：
+
+```json
+"destinations": {
+  "flash": "ollama,qwen3-coder:30b",
+  "pro":   "anthropic,claude-opus-5"
+}
+```
+
+本地服务没启动时，flash→pro 回退在连接错误时触发，请求透明地落到云端——本地优先、云端兜底，不需要任何额外配置。
+
+防呆：`auth` 为空但 `base_url` **不在**本机的 provider，serve 启动时会打一行警告（`awerouter add` 向导在同情况下会当场确认）。局域网免认证服务是合法场景——警告只提示、不拦截。
+
 **routing.json** — 路由策略，不含密钥（可以进 git）：
 
 ```json

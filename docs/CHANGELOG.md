@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.9
+
+Local models become first-class routing destinations: `auth` is now optional in providers.json, so local inference servers (Ollama, LM Studio, llama.cpp, vLLM) take their place next to API-key providers under the same protocol groups — and since flash→pro fallback already fires on connection errors, a flash=local / pro=cloud profile gives you local-first routing with a transparent cloud safety net. Ollama ≥ 0.14 speaks the Anthropic protocol natively, so even Claude Code profiles can put a local model on flash.
+
+### Added
+- Local (no-auth) providers: `auth` may be omitted, `null`, or `""` in providers.json — requests go upstream with no auth header at all (the client's incoming key is dropped, not forwarded). `Provider.auth` is `Optional`; `config show` renders no-auth as `null`; `awerouter add` accepts an empty auth env var (the "two filling modes" live in the wizard, not in a second config file — protocol remains the only grouping axis). Default providers template ships ready-to-use `ollama` examples for the `anthropic` (`http://127.0.0.1:11434`) and `openai-chat` (`http://127.0.0.1:11434/v1`) groups.
+- Forgotten-key guard, layered: a provider with no `auth` whose `base_url` is not loopback prints a serve-start warning (`_noauth_warning`); the `add` wizard asks for confirmation in the same case before writing. Informational, not fatal — LAN no-auth servers (vLLM on 192.168.x) are legitimate. Loopback detection (`is_loopback_url`) parses the host as an IP via `ipaddress` (whole 127/8 plus `::1`) rather than prefix-matching, so `127.0.0.1.evil.com` does not count as local.
+- README/README_cn: "Local models (no auth)" / "本地模型（免认证）" section — path conventions per protocol, a mixed flash=local / pro=cloud destination example, and the local-down→cloud-fallback behavior.
+
+### Behavior notes
+- A providers.json entry that previously died with "missing base_url or auth" now loads when only `auth` is absent — that was the point. A missing `base_url` still dies. A cloud API configured without auth now surfaces as an upstream 401 at request time (visible in `usage log`) plus the serve-start warning, instead of a load-time error.
+
 ## v0.4.8 - 2026-08-18
 
 L4 sheds its dead weight: the search/mechanical phase rules are gone and the layer is now a single **edit checkpoint** — the turn after the trailing tool batch changed code goes to pro (flash drafts, pro reviews). Those rules defaulted to flash, which is already the fall-through, so at defaults this changes no routing outcome; what it buys is that config, docs, and the layer's name now match its behavior.

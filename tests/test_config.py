@@ -12,11 +12,13 @@ from awerouter.config import (
     format_providers_display,
     format_routing_display,
     init_config,
+    is_loopback_url,
     load_default_profile,
     load_for_profile,
     load_providers,
     load_routing,
     redact,
+    save_provider,
     validate_profiles,
 )
 from awerouter.types import Destination, Provider, RoutingProfile, Settings, ToolRoutingConfig
@@ -45,6 +47,32 @@ class TestDetectAuthHeader:
 
     def test_anthropic_subdomain(self):
         assert detect_auth_header("https://api.anthropic.com") == "x-api-key"
+
+
+# ---------------------------------------------------------------------------
+# is_loopback_url
+# ---------------------------------------------------------------------------
+
+class TestIsLoopbackUrl:
+    @pytest.mark.parametrize("url", [
+        "http://127.0.0.1:11434",
+        "http://localhost:11434",
+        "http://localhost",
+        "http://[::1]:8080",
+        "http://127.5.6.7",          # whole 127.0.0.0/8 is loopback
+    ])
+    def test_loopback(self, url):
+        assert is_loopback_url(url) is True
+
+    @pytest.mark.parametrize("url", [
+        "https://api.anthropic.com",
+        "https://api.stepfun.com/step_plan",
+        "http://192.168.1.10:8000",  # LAN vLLM is off-machine (no auth there = warning)
+        "http://evil.com/127.0.0.1",
+        "http://127.0.0.1.evil.com",
+    ])
+    def test_off_machine(self, url):
+        assert is_loopback_url(url) is False
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +144,10 @@ def _write_config(tmp_path, providers, routing):
     (tmp_path / "routing.json").write_text(json.dumps(routing))
 
 
+# Sentinel for "JSON key absent" in parametrized no-auth tests.
+_ABSENT = object()
+
+
 # ---------------------------------------------------------------------------
 # load_providers (nested by protocol)
 # ---------------------------------------------------------------------------
@@ -147,11 +179,22 @@ class TestLoadProviders:
         result = load_providers()
         assert result["anthropic"]["p"].auth_header == "x-api-key"
 
-    def test_missing_field_dies(self, tmp_path, monkeypatch):
+    def test_missing_base_url_dies(self, tmp_path, monkeypatch):
         monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
-        _write_config(tmp_path, {"anthropic": {"p": {"base_url": "https://x"}}}, {})
-        with pytest.raises(SystemExit, match="missing"):
+        _write_config(tmp_path, {"anthropic": {"p": {"auth": "${K}"}}}, {})
+        with pytest.raises(SystemExit, match="missing base_url"):
             load_providers()
+
+    @pytest.mark.parametrize("auth", [_ABSENT, None, ""])
+    def test_missing_auth_allowed(self, tmp_path, monkeypatch, auth):
+        """auth absent/null/empty = no-auth upstream (local model servers)."""
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        entry = {"base_url": "http://127.0.0.1:11434"}
+        if auth is not _ABSENT:
+            entry["auth"] = auth
+        _write_config(tmp_path, {"anthropic": {"ollama": entry}}, {})
+        result = load_providers()
+        assert result["anthropic"]["ollama"].auth is None
 
     def test_old_agent_group_dies_with_rename_hint(self, tmp_path, monkeypatch):
         monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
@@ -571,6 +614,28 @@ class TestLoadDefaultProfile:
 
 
 # ---------------------------------------------------------------------------
+# save_provider
+# ---------------------------------------------------------------------------
+
+class TestSaveProvider:
+    def test_noauth_omits_key(self, tmp_path, monkeypatch):
+        """Local providers are written without an auth key, not with a fake one."""
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"anthropic": {}}, {})
+        save_provider("anthropic", "ollama", "http://127.0.0.1:11434", None)
+        data = json.loads((tmp_path / "providers.json").read_text())
+        assert data["anthropic"]["ollama"] == {"base_url": "http://127.0.0.1:11434"}
+
+    def test_auth_round_trips(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"anthropic": {}}, {})
+        save_provider("anthropic", "p", "https://x", "${K}")
+        data = json.loads((tmp_path / "providers.json").read_text())
+        assert data["anthropic"]["p"]["auth"] == "${K}"
+        assert load_providers()["anthropic"]["p"].auth == "${K}"
+
+
+# ---------------------------------------------------------------------------
 # init_config
 # ---------------------------------------------------------------------------
 
@@ -594,6 +659,13 @@ class TestFormatDisplay:
         }
         data = json.loads(format_providers_display(all_providers))
         assert data["anthropic"]["p"]["auth"] == "${K}"
+
+    def test_providers_noauth_shows_null(self):
+        all_providers = {
+            "anthropic": {"ollama": Provider("ollama", "http://127.0.0.1:11434", None)},
+        }
+        data = json.loads(format_providers_display(all_providers))
+        assert data["anthropic"]["ollama"]["auth"] is None
 
     def test_routing_shows_settings_and_profiles(self):
         settings = Settings(background_model="flash", think_model="pro", web_search_model="pro")

@@ -21,7 +21,7 @@ from aiohttp import web
 
 from awerouter import __version__
 from awerouter import rtk
-from awerouter.config import die, expand_value
+from awerouter.config import die, expand_value, is_loopback_url
 from awerouter.logging import append, auto_threshold, ensure_log_dir
 from awerouter.protocols import ENDPOINT_PATHS, extract
 from awerouter.router import resolve
@@ -67,10 +67,14 @@ def _filter_headers(headers: dict) -> dict:
 def _set_auth(headers: dict, provider, env: dict | None = None) -> None:
     """Replace any incoming auth header with the destination provider's creds.
 
-    Authorization header auto-prefixes 'Bearer ' if the value lacks it.
+    No-auth providers (local model servers) send no auth header at all — the
+    client's incoming key is dropped, not forwarded. Authorization header
+    auto-prefixes 'Bearer ' if the value lacks it.
     """
     headers.pop("authorization", None)
     headers.pop("x-api-key", None)
+    if not provider.auth:
+        return
     auth_value = expand_value(provider.auth, env)
     if provider.auth_header == "authorization" and not auth_value.lower().startswith("bearer "):
         auth_value = f"Bearer {auth_value}"
@@ -546,6 +550,21 @@ def _resolve_auto_threshold(profile, settings) -> "str | None":
             f"last {cfg.window_days}d — fallbackThreshold {cfg.fallback_threshold:,} in effect")
 
 
+def _noauth_warning(providers: dict) -> "str | None":
+    """Warn on no-auth providers pointing off-machine — almost always a
+    forgotten 'auth' entry (LAN servers with no auth are the legit exception)."""
+    offenders = sorted(
+        p.name for p in providers.values()
+        if not p.auth and not is_loopback_url(p.base_url)
+    )
+    if not offenders:
+        return None
+    return (
+        "warning: no auth set for off-machine providers: " + ", ".join(offenders) + "\n"
+        "  (cloud APIs need an 'auth' entry; ignore if these are unauthenticated internal servers)"
+    )
+
+
 async def _serve(host: str, port: int, providers: dict, profile, settings,
                  port_explicit: bool = False) -> None:
     auto_line = _resolve_auto_threshold(profile, settings)
@@ -615,6 +634,10 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
         print()
         print(update_hint)
     warning = _loopback_proxy_warning()
+    if warning:
+        print()
+        print(warning)
+    warning = _noauth_warning(providers)
     if warning:
         print()
         print(warning)
