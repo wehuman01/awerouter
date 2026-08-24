@@ -194,6 +194,16 @@ Local and cloud mix freely in one profile — cheap drafting on local, hard call
 }
 ```
 
+End to end with Ollama, flash=local / pro=cloud:
+
+```bash
+ollama pull qwen3-coder:30b      # local server listens on 127.0.0.1:11434 by default
+awerouter serve cc-router-1
+export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
+```
+
+Default ports for the common local servers (all `openai-chat`, all no-auth): LM Studio `http://127.0.0.1:1234/v1`, llama.cpp `http://127.0.0.1:8080/v1`, vLLM `http://127.0.0.1:8000/v1`.
+
 If the local server is down, the flash→pro fallback kicks in on connection errors and requests transparently go to the cloud — local-first with a cloud safety net, no extra config.
 
 Guard against a forgotten key: a provider with no `auth` whose `base_url` is **not** on localhost gets a warning at serve start (`awerouter add` asks for confirmation in the same case). LAN servers without auth are legitimate — the warning is informational, not fatal.

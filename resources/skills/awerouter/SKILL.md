@@ -1,6 +1,6 @@
 ---
 name: awerouter
-description: "Use when helping users set up or edit awerouter routing, inspect routing profiles, interpret usage logs, or tune flash/pro split behavior for coding-agent traffic. 中文触发词：awerouter、路由配置、flash/pro、长文本阈值、Anthropic代理、OpenAI代理、用量统计。"
+description: "Use when helping users set up or edit awerouter routing, inspect routing profiles, interpret usage logs, or tune flash/pro split behavior for coding-agent traffic. 中文触发词：awerouter、路由配置、flash/pro、长文本阈值、Anthropic代理、OpenAI代理、用量统计、本地模型、Ollama。"
 ---
 
 # awerouter
@@ -56,10 +56,12 @@ Do not run these inside the agent:
 {
   "anthropic": {
     "stepfun":   { "base_url": "https://api.stepfun.com/step_plan", "auth": "${STEPFUN_AUTH_TOKEN}" },
-    "anthropic": { "base_url": "https://api.anthropic.com",          "auth": "${ANTHROPIC_KEY}" }
+    "anthropic": { "base_url": "https://api.anthropic.com",          "auth": "${ANTHROPIC_KEY}" },
+    "ollama":    { "base_url": "http://127.0.0.1:11434" }
   },
   "openai-chat": {
-    "stepfun": { "base_url": "https://api.stepfun.com/step_plan/v1", "auth": "${STEPFUN_AUTH_TOKEN}" }
+    "stepfun": { "base_url": "https://api.stepfun.com/step_plan/v1", "auth": "${STEPFUN_AUTH_TOKEN}" },
+    "ollama":  { "base_url": "http://127.0.0.1:11434/v1" }
   },
   "openai-responses": {
     "openai": { "base_url": "https://api.openai.com/v1", "auth": "${OPENAI_API_KEY}" }
@@ -69,7 +71,7 @@ Do not run these inside the agent:
 
 Rules:
 - `base_url` uses each native client's convention. Copy it from the client config.
-- `auth` supports `${ENV_VAR}` references.
+- `auth` supports `${ENV_VAR}` references. It may be omitted for no-auth upstreams (local model servers: Ollama, LM Studio, llama.cpp, vLLM) — requests then go out with no auth header. Local servers sit under `openai-chat` with a `/v1` base_url; Ollama ≥ 0.14 also speaks the anthropic protocol.
 - `auth_header` is optional. If omitted, awerouter auto-detects:
   - `anthropic.com` -> `x-api-key`
   - others -> `Authorization` with auto `Bearer ` prefix when needed.
@@ -81,7 +83,7 @@ Rules:
   "settings": {
     "backgroundModel": "flash",
     "thinkModel": "pro",
-    "webSearchModel": "pro"
+    "toolRouting": { "webSearch": "pro", "edit": "pro" }
   },
   "cc-router-1": {
     "protocol": "anthropic",
@@ -95,7 +97,7 @@ Rules:
 ```
 
 Rules:
-- `settings` is optional.
+- `settings` is optional. Tool-keyed rules live in `settings.toolRouting` (`webSearch`, `edit`); the legacy top-level `webSearchModel` still works. `longContextThreshold` is an integer or `"auto"` (calibrated from recent traffic per `settings.longContextAuto`).
 - Each profile needs `protocol`, `longContextThreshold`, and `destinations`.
 - Supported protocols: `anthropic`, `openai-chat`, `openai-responses`.
 - Optional `"rtk": true` enables RTK tool-result compression (default off): verbose tool output (git diff/status/log, grep, listings, build logs) is compressed before forwarding. Fail-open, deterministic; error results and short content pass through. Per-request opt-out header: `X-Awerouter-Token-Saver: off`. After enabling, re-run `awerouter usage calibrate` (thresholds tuned on uncompressed traffic over-trigger pro).
@@ -106,9 +108,10 @@ awerouter evaluates requests in first-match-wins order:
 
 | Layer | Signal | Result |
 |-------|--------|--------|
-| L1 | `web_search` tool present | `settings.webSearchModel` (default pro) |
+| L1 | `web_search` tool present | `toolRouting.webSearch` (default pro; legacy `webSearchModel` works) |
 | L2 | tier model label (`c1/flash`, `c1/think`, or equivalent model mapping) | flash or pro |
 | L3 | long context (token count over all request content) or image present | pro if above threshold or image present |
+| L4 | trailing tool batch changed code (`edit`/`write`/`apply_patch`/...) | `toolRouting.edit` (default pro, `null` disables) |
 
 Notes:
 - For Anthropic-style clients, tier labels come from the model id mapping.
@@ -141,7 +144,7 @@ awerouter list
 1. Read the config.
 2. Update `routing.json` only for strategy changes.
 3. Update `providers.json` only for endpoint/auth changes.
-4. Keep `${ENV_VAR}` for secrets.
+4. Keep `${ENV_VAR}` for secrets; omit `auth` entirely for local no-auth providers.
 5. Validate with:
 ```bash
 awerouter config show

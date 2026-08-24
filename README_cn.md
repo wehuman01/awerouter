@@ -194,6 +194,16 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 }
 ```
 
+以 Ollama 为例的端到端部署（flash=本地 / pro=云端）：
+
+```bash
+ollama pull qwen3-coder:30b      # 本地服务默认监听 127.0.0.1:11434
+awerouter serve cc-router-1
+export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
+```
+
+常见本地服务的默认端口（都走 `openai-chat`、都免认证）：LM Studio `http://127.0.0.1:1234/v1`、llama.cpp `http://127.0.0.1:8080/v1`、vLLM `http://127.0.0.1:8000/v1`。
+
 本地服务没启动时，flash→pro 回退在连接错误时触发，请求透明地落到云端——本地优先、云端兜底，不需要任何额外配置。
 
 防呆：`auth` 为空但 `base_url` **不在**本机的 provider，serve 启动时会打一行警告（`awerouter add` 向导在同情况下会当场确认）。局域网免认证服务是合法场景——警告只提示、不拦截。

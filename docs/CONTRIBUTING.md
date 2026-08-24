@@ -52,7 +52,8 @@ Claude Code
 awerouter
    ├─ resolve(): L1 capability guard (web_search) → L2 tier label
    │             (backgroundModel/thinkModel) → L3 difficulty
-   │             (request tokens > threshold or image) → else flash
+   │             (request tokens > threshold or image) → L4 edit
+   │             checkpoint (trailing tool batch changed code) → else flash
    ├─ rewrite model + auth header, forward to provider
    ├─ pre-stream fallback: flash → pro on 429/408/5xx/network errors
    └─ opaque SSE passthrough (response bytes are never parsed)
@@ -63,7 +64,7 @@ provider (flash: cheap/fast — pro: strong/accurate)
 Key design decisions:
 
 - **Context lives in the client.** Every request carries the full history; the router keeps no session state, so restarts are lossless and routing is decided per request.
-- **Three-layer first-match-wins routing.** L1/L2 are exact signals; L3 is the only threshold-sensitive layer, tunable via `awerouter usage calibrate`.
+- **Four-layer first-match-wins routing.** L1/L2/L4 are exact signals; L3 is the only threshold-sensitive layer, tunable via `awerouter usage calibrate`. L4 routes the turn after an edit to pro — flash drafts, pro reviews.
 - **Opaque response path.** The proxy streams response bytes through untouched. Anything that needs response parsing (e.g., output-token accounting) must justify breaking this property.
 - **Fallback only before the first byte.** Once streaming starts, a request is never re-attempted, so clients never see duplicated output.
 
@@ -71,8 +72,8 @@ Key design decisions:
 
 Two files in `~/.config/awerouter/` (override with `AWEROUTER_CONFIG_DIR`):
 
-- `providers.json` — `{agent: {provider: {base_url, auth, auth_header?}}}`. Secrets use `${VAR}` references; missing env vars die at request time with an actionable message. `auth_header` is auto-detected from the base_url netloc (`anthropic.com` → `x-api-key`, else `Authorization` with auto-prefixed `Bearer `).
-- `routing.json` — optional `settings` (`backgroundModel`, `thinkModel`, `webSearchModel`) plus profile entries `{agent, longContextThreshold, destinations: {flash, pro}}` where a destination is `"provider,model"`.
+- `providers.json` — `{protocol: {provider: {base_url, auth?, auth_header?}}}`. Secrets use `${VAR}` references; missing env vars die at request time with an actionable message. `auth` is optional — omitted means a no-auth upstream (local model servers; requests go out with no auth header). `auth_header` is auto-detected from the base_url netloc (`anthropic.com` → `x-api-key`, else `Authorization` with auto-prefixed `Bearer `).
+- `routing.json` — optional `settings` (`backgroundModel`, `thinkModel`, `toolRouting` with `webSearch`/`edit`; legacy `webSearchModel` still works, `longContextAuto`) plus profile entries `{protocol, port?, longContextThreshold, rtk?, destinations: {flash, pro}}` where a destination is `"provider,model"` and `longContextThreshold` is an integer or `"auto"`.
 
 Rules:
 
@@ -90,6 +91,8 @@ If you change command behavior, config shape, routing rules, or install steps, u
 
 - `README.md`
 - `README_cn.md`
+- `README.ai.md`
+- `resources/skills/awerouter/SKILL.md`
 - `docs/CHANGELOG.md`
 - tests that define the behavior
 

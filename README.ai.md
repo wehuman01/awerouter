@@ -166,7 +166,7 @@ Tell the user the difference between the two files:
 
 1. Read `providers.json`.
 2. Update only the protocol group you need: `anthropic`, `openai-chat`, or `openai-responses`.
-3. Use `${ENV_VAR}` for auth values.
+3. Use `${ENV_VAR}` for auth values. Local model servers (Ollama, LM Studio, llama.cpp, vLLM) need no auth — omit the `auth` key entirely, e.g. `{ "base_url": "http://127.0.0.1:11434/v1" }` under `openai-chat`.
 4. Keep `base_url` exactly as the client expects.
 
 ### Edit routing
@@ -183,7 +183,7 @@ If the user is unsure, recommend starting from `awerouter init` and changing one
 
 ## Step 5: Set up environment variables
 
-Provider auth uses `${ENV_VAR}` references that expand from the shell environment. These must be set before starting `awerouter serve`.
+Provider auth uses `${ENV_VAR}` references that expand from the shell environment. These must be set before starting `awerouter serve`. Providers without an `auth` key (local model servers) need no environment variable.
 
 ### Where to put them
 
