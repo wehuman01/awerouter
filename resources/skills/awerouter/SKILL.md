@@ -187,4 +187,5 @@ Use `awerouter usage tokens` to show input-token totals by content type (message
 - Profile not found -> check `routing.json` profile id spelling and `AWEROUTER_CONFIG_DIR`.
 - Provider not found -> check protocol group name and provider spelling in `providers.json`.
 - Missing token env var -> set the shell variable before starting `awerouter serve`.
+- Serve-start warning "no auth set for off-machine providers" -> either a forgotten `auth` entry (cloud APIs need one) or a legitimate LAN no-auth server; the warning is informational, not fatal.
 - Config broken after an edit -> `config edit` and the `add` wizard write a `.bak` before every change; tell the user to run `awerouter restore [providers|routing]` in their own terminal.
