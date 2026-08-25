@@ -65,6 +65,35 @@ Adding a provider is a config edit, not an architecture change. The agent can do
 
 > "Add GLM as a provider in the openai-chat group. Set flash to `glm,glm-4-flash`."
 
+## Local Models Join the Mix
+
+A provider does not have to be a cloud API. Local inference servers — Ollama, LM Studio, llama.cpp, vLLM — are providers too, and they need no key: omit the `auth` field and the request goes upstream with no auth header at all.
+
+```json
+{
+  "anthropic": {
+    "ollama":    { "base_url": "http://127.0.0.1:11434" },
+    "anthropic": { "base_url": "https://api.anthropic.com", "auth": "${ANTHROPIC_KEY}" }
+  },
+  "openai-chat": {
+    "ollama": { "base_url": "http://127.0.0.1:11434/v1" }
+  }
+}
+```
+
+Any OpenAI-compatible server fits under `openai-chat` (LM Studio `http://127.0.0.1:1234/v1`, llama.cpp `http://127.0.0.1:8080/v1`, vLLM `http://127.0.0.1:8000/v1`); Ollama ≥ 0.14 also speaks the Anthropic protocol, so a local model can even sit in the `anthropic` group next to Claude Code. The path conventions match their cloud counterparts: `openai-chat` base_urls carry the `/v1` segment, `anthropic` ones don't.
+
+From there, local and cloud mix freely in one profile — cheap drafting on a local model, hard calls on a cloud API:
+
+```json
+"destinations": {
+  "flash": "ollama,qwen3-coder:30b",
+  "pro":   "anthropic,claude-opus-5"
+}
+```
+
+If the local server is down, the flash→pro fallback fires on connection errors and requests transparently go to the cloud — local-first routing with a cloud safety net, no extra config.
+
 ## Why This Matters
 
 The first generation of LLM proxies assumed a one-to-one relationship: one client, one provider, one protocol. That model breaks down the moment you actually want to mix.
@@ -72,3 +101,18 @@ The first generation of LLM proxies assumed a one-to-one relationship: one clien
 awerouter's design treats the protocol layer as transport and the provider mix as strategy. They are independent axes. You can change providers without touching routing logic. You can change routing logic without touching providers. The four-layer decision pipeline does not care which provider sits behind `flash` or `pro` — it only cares that `flash` exists and `pro` exists.
 
 That separation is what lets one router and one config directory — one daemon instance per profile — serve every agent on your machine, across every provider you use, in every protocol they speak.
+
+## More from the awerouter Series
+
+- [awerouter: No Fear of DeepSeek Price Hikes — One Sentence Lets Smart Routing Save You Money](https://mp.weixin.qq.com/s/8jucVeQWQRjCIUEXxj-fHQ)
+- [awerouter Update: The Dashboard Shows You Exactly How Much You Saved](https://mp.weixin.qq.com/s/V1tPgz-jEekAMRdLMzGZGQ)
+
+## More from mugpeng
+
+awerouter is part of the aweteam ecosystem:
+
+- **[aweskill](https://aweskill.webioinfo.top/)** — CLI-first skill package manager for 47+ AI coding agents
+- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Agent profile switcher for Claude Code, Codex, and OpenCode; launches sessions pointing at the awerouter daemon
+- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — AI coding session manager with profile-aware restoration
+- **[awerouter](https://github.com/mugpeng/awerouter)** — A smart LLM router that automatically directs agent requests to fast, low-cost Flash models or more capable Pro providers using structural signals, balancing cost, latency, and reasoning quality.
+- **[awescholar](https://github.com/Webioinfo01/awescholar)** — Automated scientific literature discovery and curation for Awesome lists.

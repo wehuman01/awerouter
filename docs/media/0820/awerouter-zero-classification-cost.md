@@ -43,7 +43,7 @@ One detail worth knowing: the token count is not a raw sum. File-search results 
 
 A context stuffed with two hundred file paths is big, but it is not hard. If the router compared raw size, every search-heavy session would get promoted on the weight of its file listings alone — paying pro prices for an overgrown `ls` output.
 
-So search-result tokens are counted at a discount before the threshold comparison. The router measures the portion of the context that actually stresses a model. Measure difficulty, not tonnage.
+So search-result tokens are counted at a discount before the threshold comparison. The router measures the portion of the context that actually stresses a model. Measure difficulty, not tonnage. And none of the dials are locked: the search-result discount, the long-context threshold, and the other routing parameters all live in your config, ready to be tuned for your own model mix and workload.
 
 ## The Router Does Not Read Your Conversations
 
@@ -66,3 +66,18 @@ A router that guessed would have to justify itself with vibes. A router that mea
 The structure of a request tells you enough about its cost and difficulty. Reading that structure is free. A router should never pay — in tokens, latency, or risk — to make a decision it can make for nothing.
 
 Four questions, ordered from certainty to guesswork, with a cheap default and one-way safety doors. No classifier. No keywords. No oracle. Just measurement, honestly bounded.
+
+## More from the awerouter Series
+
+- [awerouter: No Fear of DeepSeek Price Hikes — One Sentence Lets Smart Routing Save You Money](https://mp.weixin.qq.com/s/8jucVeQWQRjCIUEXxj-fHQ)
+- [awerouter Update: The Dashboard Shows You Exactly How Much You Saved](https://mp.weixin.qq.com/s/V1tPgz-jEekAMRdLMzGZGQ)
+
+## More from mugpeng
+
+awerouter is part of the aweteam ecosystem:
+
+- **[aweskill](https://aweskill.webioinfo.top/)** — CLI-first skill package manager for 47+ AI coding agents
+- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Agent profile switcher for Claude Code, Codex, and OpenCode; launches sessions pointing at the awerouter daemon
+- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — AI coding session manager with profile-aware restoration
+- **[awerouter](https://github.com/mugpeng/awerouter)** — A smart LLM router that automatically directs agent requests to fast, low-cost Flash models or more capable Pro providers using structural signals, balancing cost, latency, and reasoning quality.
+- **[awescholar](https://github.com/Webioinfo01/awescholar)** — Automated scientific literature discovery and curation for Awesome lists.
