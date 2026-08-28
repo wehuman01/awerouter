@@ -166,7 +166,7 @@ Tell the user the difference between the two files:
 
 1. Read `providers.json`.
 2. Update only the protocol group you need: `anthropic`, `openai-chat`, or `openai-responses`.
-3. Use `${ENV_VAR}` for auth values. Local model servers (Ollama, LM Studio, llama.cpp, vLLM) need no auth — omit the `auth` key entirely, e.g. `{ "base_url": "http://127.0.0.1:11434/v1" }` under `openai-chat`.
+3. Use `${ENV_VAR}` for auth values. Local model servers (Ollama, LM Studio, llama.cpp, vLLM) need no auth — omit the `auth` key entirely, e.g. `{ "base_url": "http://127.0.0.1:11434/v1" }` under `openai-chat`. A Codex subscription account needs no key either: `"auth": "codex"` under `openai-responses` (base_url `https://chatgpt.com/backend-api/codex`) rides the local Codex CLI login (`~/.codex/auth.json`).
 4. Keep `base_url` exactly as the client expects.
 
 ### Edit routing

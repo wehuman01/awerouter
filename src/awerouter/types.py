@@ -122,3 +122,4 @@ class RequestLog:
     tokens: dict = field(default_factory=dict)  # per-type input-token breakdown; sum == token_count (pre-breakdown logs: empty)
     file_search_tokens: int = 0                  # estimated tokens of file-search tool results (0 = none / legacy log)
     rtk_saved: int = 0                           # estimated input tokens saved by rtk compression (0 = off / none / legacy log)
+    codex_retried: bool = False                  # an upstream 401 triggered a codex login re-read + retry (False = no / legacy log)

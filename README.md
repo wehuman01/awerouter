@@ -208,6 +208,35 @@ If the local server is down, the flash→pro fallback kicks in on connection err
 
 Guard against a forgotten key: a provider with no `auth` whose `base_url` is **not** on localhost gets a warning at serve start (`awerouter add` asks for confirmation in the same case). LAN servers without auth are legitimate — the warning is informational, not fatal.
 
+### Codex account (subscription login)
+
+`"auth": "codex"` in the `openai-responses` group rides the local Codex CLI login (`$CODEX_HOME/auth.json`, default `~/.codex/auth.json`) instead of an API key — the subscription's own models mix into flash/pro routing next to key-based providers:
+
+```json
+"openai-responses": {
+  "stepfun": { "base_url": "https://api.stepfun.com/step_plan/v1", "auth": "${STEPFUN_AUTH_TOKEN}" },
+  "codex":   { "base_url": "https://chatgpt.com/backend-api/codex", "auth": "codex" }
+}
+```
+
+```json
+"destinations": {
+  "flash": "stepfun,step-router-v1",
+  "pro":   "codex,gpt-5.6-luna"
+}
+```
+
+Any Responses-speaking client (Codex itself, or any agent with a configurable OpenAI Responses base URL) points at awerouter with a dummy key; the real `Authorization: Bearer <access_token>` plus `chatgpt-account-id` headers are injected per request. A few body fields are normalized for the backend's quirks: `store` is forced to `false` (zero-data-retention, `store: true` is rejected), `max_output_tokens` is dropped (rejected), and since the backend has no non-streaming mode a non-streaming request goes upstream as SSE and comes back buffered into a single JSON response (output items rebuilt from the stream) — both client styles just work.
+
+How it behaves:
+
+- **Read-only login, no refresh.** OpenAI refresh tokens are single-use and rotating; refreshing here would invalidate the local CLI's login, so the CLI keeps sole ownership of refresh. awerouter re-reads `auth.json` on every request, and once more on an upstream 401 (the CLI usually refreshed it). A 401 that survives the re-read means the login itself is expired: flash requests then fall back to a keyed pro destination — one printed line per fallback, and a `401-retry` marker in `usage log` — surfacing the 401 only when pro rides the same codex login. The access token lives ~10 days — keep using `codex` (or awewarm) so the login stays fresh.
+- **Proxy-aware.** codex providers honor `https_proxy`/`all_proxy` (the same vars the Codex CLI honors) — chatgpt.com often needs the shell proxy to be reachable. Other providers always connect directly.
+- **Model names drift.** `gpt-5-codex`/`gpt-5.1-codex` are already rejected by the backend with a 400; the current name is whatever the CLI uses (`gpt-5.6-luna` at the time of writing). The model comes from your destination entry, so a rename is a one-line routing.json edit.
+- **No login yet?** A missing/invalid `auth.json` turns requests into a 503 with a `run: codex login` hint, and serve prints a warning at startup. Deliberately no fallback there, unlike an expired token mid-session: a missing login is a config error best fixed immediately, and silently serving it from a paid pro would hide both the error and the bill.
+
+The sentinel only loads in the `openai-responses` group — the ChatGPT Codex backend speaks the Responses protocol, so it can't sit in `anthropic`/`openai-chat` profiles.
+
 **routing.json** — strategy, no secrets (safe to commit):
 
 ```json
@@ -311,7 +340,7 @@ awerouter usage savings [--since ..] [--profile ..]
 
 All `usage` subcommands read the same request log. `log`, `stats`, `tokens`, `calibrate`, and `savings` take `--since` (`today`, `yesterday`, `7d`, or `YYYY-MM-DD`, local time) and `--profile` directly — e.g. `awerouter usage stats --since today --profile cc-1`; `clean` deletes everything and takes no window options.
 
-`usage stats` aggregates the log per profile (with its wire protocol): label/agent/destination/provider/model breakdowns with percentages, error and fallback counts, latency percentiles (first byte and total) per destination/provider/model, and estimated request tokens (all request content: messages, system prompt, tools, tool I/O). `usage clean` deletes the saved logs (`requests.jsonl` + rotated backup) after a confirmation prompt. `usage log` shows entries verbatim — the last 20 by default, or every entry with `--all`; each line includes the protocol served and the calling agent, detected from the client's `User-Agent` header (`claude-cli/...` → `claude-code`, `codex_cli_rs/...` → `codex`, `opencode/...` → `opencode`). `--tokens` swaps the status/latency/model-in columns for the per-type token breakdown of each request (`msg/sys/tools/results/calls/think`); entries logged before per-type counting show only the total.
+`usage stats` aggregates the log per profile (with its wire protocol): label/agent/destination/provider/model breakdowns with percentages, error and fallback counts, latency percentiles (first byte and total) per destination/provider/model, and estimated request tokens (all request content: messages, system prompt, tools, tool I/O). `usage clean` deletes the saved logs (`requests.jsonl` + rotated backup) after a confirmation prompt. `usage log` shows entries verbatim — the last 20 by default, or every entry with `--all`; requests that went through a codex login re-read carry a `401-retry` marker; each line includes the protocol served and the calling agent, detected from the client's `User-Agent` header (`claude-cli/...` → `claude-code`, `codex_cli_rs/...` → `codex`, `opencode/...` → `opencode`). `--tokens` swaps the status/latency/model-in columns for the per-type token breakdown of each request (`msg/sys/tools/results/calls/think`); entries logged before per-type counting show only the total.
 
 `usage tokens` aggregates those per-type breakdowns: input-token totals and share by content type (messages, system prompt, tool definitions, tool results, tool-call arguments, thinking) — useful for seeing how much of a request's tokens are environment constants (system prompt + tool definitions) versus conversation.
 

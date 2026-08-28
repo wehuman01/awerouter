@@ -11,6 +11,7 @@
   },
   "openai-responses": {
     "openai": { "base_url": "https://api.openai.com/v1",        "auth": "${OPENAI_API_KEY}" },
-    "glm":    { "base_url": "https://open.bigmodel.cn/api/v1",  "auth": "${GLM_API_KEY}" }
+    "glm":    { "base_url": "https://open.bigmodel.cn/api/v1",  "auth": "${GLM_API_KEY}" },
+    "codex":  { "base_url": "https://chatgpt.com/backend-api/codex", "auth": "codex" }
   }
 }

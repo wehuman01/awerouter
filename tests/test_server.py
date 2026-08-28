@@ -1,6 +1,7 @@
 """Integration tests for awerouter.server."""
 
 import asyncio
+import json
 import os
 import re
 import socket
@@ -13,6 +14,8 @@ from awerouter import __version__
 from awerouter.server import (
     _agent_from_ua,
     _client_hint,
+    _codex_login_warning,
+    _codex_proxy,
     _loopback_proxy_warning,
     _noauth_warning,
     _resolve_auto_threshold,
@@ -562,6 +565,306 @@ class TestOpenAIProtocols:
                 })
                 assert r.status == 400
         run(t())
+
+
+class TestCodexAccount:
+    """"auth": "codex" providers ride the local Codex CLI login into routing."""
+
+    @pytest.fixture(autouse=True)
+    def _codex_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "codex-home"
+        home.mkdir()
+        monkeypatch.setenv("CODEX_HOME", str(home))
+        self.home = home
+
+    def _login(self, access_token="tok-1", account_id="acct-1"):
+        (self.home / "auth.json").write_text(json.dumps(
+            {"tokens": {"access_token": access_token, "account_id": account_id}}),
+            encoding="utf-8")
+
+    def _app(self, port):
+        providers = {"codex": Provider("codex", f"http://127.0.0.1:{port}", "codex")}
+        profile = RoutingProfile("cx", "openai-responses", 32, {
+            "flash": Destination("codex", "gpt-5.6-luna"),
+            "pro": Destination("codex", "gpt-5.6-luna"),
+        })
+        return create_app(providers, profile, SETTINGS)
+
+    SSE_OK = (
+        'event: response.created\n'
+        'data: {"type":"response.created","response":{"id":"r1"}}\n\n'
+        'event: response.output_item.done\n'
+        'data: {"type":"response.output_item.done","item":{"id":"m1","type":"message",'
+        '"role":"assistant","content":[{"type":"output_text","text":"pong"}]}}\n\n'
+        'event: response.completed\n'
+        'data: {"type":"response.completed","response":{"id":"r1","model":"gpt-5.6-luna",'
+        '"status":"completed"}}\n\n'
+    )
+
+    def test_codex_headers_store_and_model_rewrite(self):
+        """Full codex header set replaces the client's dummy key; store is
+        forced false (ZDR backend); model is rewritten to the destination's."""
+        captured = {}
+
+        async def t():
+            async def up(request):
+                captured.update({
+                    "authorization": request.headers.get("authorization"),
+                    "account": request.headers.get("chatgpt-account-id"),
+                    "beta": request.headers.get("OpenAI-Beta"),
+                    "originator": request.headers.get("originator"),
+                })
+                body = await request.json()
+                captured["body"] = body
+                return web.json_response({"model": body["model"]})
+
+            up_app = web.Application()
+            up_app.router.add_post("/responses", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                self._login("tok-9", "acct-9")
+                async with TestClient(TestServer(self._app(up_server.port))) as c:
+                    r = await c.post("/v1/responses", json={
+                        "model": "auto",
+                        "input": [{"role": "user", "content": "hi"}],
+                        "store": True,
+                        "stream": True,
+                        "max_output_tokens": 4096,
+                    }, headers={"authorization": "Bearer dummy-client-key"})
+                    assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        assert captured["authorization"] == "Bearer tok-9"
+        assert captured["account"] == "acct-9"
+        assert captured["beta"] == "responses=experimental"
+        assert captured["originator"] == "codex_cli_rs"
+        assert captured["body"]["model"] == "gpt-5.6-luna"
+        assert captured["body"]["store"] is False
+        assert "max_output_tokens" not in captured["body"]  # rejected by the backend
+
+    def test_non_streaming_client_gets_json_response(self):
+        """The codex backend only speaks SSE: a non-streaming client's request
+        goes upstream as stream=true and comes back as one JSON object."""
+        captured = {}
+        d = {}
+
+        async def t():
+            async def up(request):
+                captured["stream"] = (await request.json()).get("stream")
+                return web.Response(text=self.SSE_OK, content_type="text/event-stream")
+
+            up_app = web.Application()
+            up_app.router.add_post("/responses", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                self._login()
+                async with TestClient(TestServer(self._app(up_server.port))) as c:
+                    r = await c.post("/v1/responses", json={
+                        "model": "auto",
+                        "input": [{"role": "user", "content": "hi"}],
+                    })
+                    assert r.status == 200
+                    d.clear()
+                    d.update(await r.json())
+            finally:
+                await up_server.close()
+        run(t())
+        assert captured["stream"] is True   # forced upstream
+        assert d["id"] == "r1"              # buffered back as JSON
+        assert d["model"] == "gpt-5.6-luna"
+        # output items rebuilt from response.output_item.done (the codex
+        # backend's terminal object omits them)
+        assert d["output"][0]["content"][0]["text"] == "pong"
+
+    def test_failed_sse_surfaces_error(self):
+        d = {}
+
+        async def t():
+            sse = ('event: response.failed\n'
+                   'data: {"type":"response.failed","response":{"id":"r2",'
+                   '"error":{"code":"server_error","message":"boom"}}}\n\n')
+
+            async def up(request):
+                return web.Response(text=sse, content_type="text/event-stream")
+
+            up_app = web.Application()
+            up_app.router.add_post("/responses", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                self._login()
+                async with TestClient(TestServer(self._app(up_server.port))) as c:
+                    r = await c.post("/v1/responses", json={
+                        "model": "auto",
+                        "input": [{"role": "user", "content": "hi"}],
+                    })
+                    assert r.status == 500
+                    d.clear()
+                    d.update(await r.json())
+            finally:
+                await up_server.close()
+        run(t())
+        assert d["error"]["message"] == "boom"
+
+    def test_401_rereads_login_once(self):
+        """A 401 usually means the CLI refreshed the login under us: re-read
+        auth.json and retry the same destination once with the new token."""
+        calls = []
+
+        async def t():
+            async def up(request):
+                calls.append(request.headers.get("authorization"))
+                if len(calls) == 1:
+                    self._login("tok-2", "acct-1")  # CLI refreshed mid-flight
+                    return web.json_response(
+                        {"error": {"message": "invalid token"}}, status=401)
+                return web.Response(text=self.SSE_OK, content_type="text/event-stream")
+
+            up_app = web.Application()
+            up_app.router.add_post("/responses", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                self._login("tok-1", "acct-1")
+                async with TestClient(TestServer(self._app(up_server.port))) as c:
+                    r = await c.post("/v1/responses", json={
+                        "model": "auto",
+                        "input": [{"role": "user", "content": "hi"}],
+                    })
+                    assert r.status == 200
+                    assert (await r.json())["id"] == "r1"
+            finally:
+                await up_server.close()
+        run(t())
+        assert calls == ["Bearer tok-1", "Bearer tok-2"]
+        from awerouter.logging import tail
+        e = tail(1)[0]
+        assert e.status == 200 and e.codex_retried is True  # retry visible in calibration data
+
+    def test_second_401_falls_back_to_keyed_pro(self, capsys):
+        """A 401 that survives the login re-read means the login is dead, not
+        refreshed: flash falls back to a keyed pro (loudly, one printed line)
+        instead of passing the 401 through."""
+        calls = []
+
+        async def t():
+            async def up(request):
+                calls.append(request.headers.get("authorization"))
+                if "chatgpt-account-id" in request.headers:  # codex login request
+                    return web.json_response(
+                        {"error": {"message": "invalid token"}}, status=401)
+                return web.json_response({"id": "r-pro"})  # keyed pro serves it
+
+            up_app = web.Application()
+            up_app.router.add_post("/responses", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                self._login("tok-stale", "acct-1")
+                providers = {
+                    "codex": Provider("codex", f"http://127.0.0.1:{up_server.port}", "codex"),
+                    "deepseek": Provider("deepseek", f"http://127.0.0.1:{up_server.port}", "sk-x"),
+                }
+                profile = RoutingProfile("cx", "openai-responses", 32, {
+                    "flash": Destination("codex", "gpt-5.6-luna"),
+                    "pro": Destination("deepseek", "deepseek-chat"),
+                })
+                async with TestClient(TestServer(create_app(providers, profile, SETTINGS))) as c:
+                    r = await c.post("/v1/responses", json={
+                        "model": "auto",
+                        "input": [{"role": "user", "content": "hi"}],
+                    })
+                    assert r.status == 200
+                    assert (await r.json())["id"] == "r-pro"
+            finally:
+                await up_server.close()
+        run(t())
+        assert len(calls) == 3  # codex 401, re-read retry 401, keyed pro 200
+        assert "falls back to pro" in capsys.readouterr().out
+        from awerouter.logging import tail
+        e = tail(1)[0]
+        assert e.provider == "deepseek" and e.label.endswith("→fallback")
+        assert e.codex_retried is True
+
+    def test_second_401_surfaces_to_client(self):
+        """Both destinations ride the same codex login: a fallback would just
+        retry the dead login, so the 401 surfaces after the one re-read."""
+        calls = []
+
+        async def t():
+            async def up(request):
+                calls.append(1)
+                return web.json_response(
+                    {"error": {"message": "invalid token"}}, status=401)
+
+            up_app = web.Application()
+            up_app.router.add_post("/responses", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                self._login("tok-stale", "acct-1")
+                async with TestClient(TestServer(self._app(up_server.port))) as c:
+                    r = await c.post("/v1/responses", json={
+                        "model": "auto",
+                        "input": [{"role": "user", "content": "hi"}],
+                    })
+                    assert r.status == 401
+            finally:
+                await up_server.close()
+        run(t())
+        assert len(calls) == 2  # one retry, then the 401 passes through
+
+    def test_missing_login_503_with_hint(self):
+        async def t():
+            async with TestClient(TestServer(self._app(0))) as c:
+                r = await c.post("/v1/responses", json={
+                    "model": "auto",
+                    "input": [{"role": "user", "content": "hi"}],
+                })
+                assert r.status == 503
+                d = await r.json()
+                assert "codex login" in d["error"]["message"]
+        run(t())
+
+    def test_serve_warning_without_login(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "absent"))
+        providers = {"codex": Provider("codex", "https://chatgpt.com/backend-api/codex", "codex")}
+        w = _codex_login_warning(providers)
+        assert w is not None and "codex login" in w
+
+    def test_no_serve_warning_with_login(self):
+        self._login()
+        providers = {"codex": Provider("codex", "https://chatgpt.com/backend-api/codex", "codex")}
+        assert _codex_login_warning(providers) is None
+
+    REMOTE = "https://chatgpt.com/backend-api/codex"
+
+    def _proxies(self, monkeypatch, value):
+        monkeypatch.setattr("awerouter.server.urllib.request.getproxies", lambda: value)
+
+    def test_proxy_https_env(self, monkeypatch):
+        self._proxies(monkeypatch, {"https": "http://127.0.0.1:7890"})
+        assert _codex_proxy(self.REMOTE) == "http://127.0.0.1:7890"
+
+    def test_proxy_all_env_fallback(self, monkeypatch):
+        self._proxies(monkeypatch, {"all": "http://127.0.0.1:7890"})
+        assert _codex_proxy(self.REMOTE) == "http://127.0.0.1:7890"
+
+    def test_loopback_never_proxied(self, monkeypatch):
+        """Loopback targets (local relays) stay direct even with proxies set."""
+        self._proxies(monkeypatch, {"https": "http://127.0.0.1:7890"})
+        assert _codex_proxy("http://127.0.0.1:9/") is None
+
+    def test_socks_only_proxy_ignored(self, monkeypatch):
+        self._proxies(monkeypatch, {"all": "socks5://127.0.0.1:7890"})
+        assert _codex_proxy(self.REMOTE) is None
+
+    def test_no_proxies_direct(self, monkeypatch):
+        self._proxies(monkeypatch, {})
+        assert _codex_proxy(self.REMOTE) is None
 
 
 class TestAgentFromUA:

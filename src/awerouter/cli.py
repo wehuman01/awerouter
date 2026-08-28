@@ -323,8 +323,9 @@ def _usage_log(n, since=None, profile_name=None, tokens_mode=False):
         status_s = str(e.status) if e.status is not None else "-"
         dur_s = f"/{_fmt_ms(e.duration_ms)}" if e.duration_ms else ""
         rtk_s = f"  rtk=+{e.rtk_saved:,}" if e.rtk_saved else ""
+        retry_s = "  401-retry" if e.codex_retried else ""
         click.echo(
-            f"{head}status={status_s:>3}  {_fmt_ms(e.ms)}{dur_s}  "
+            f"{head}status={status_s:>3}{retry_s}  {_fmt_ms(e.ms)}{dur_s}  "
             f"tokens={e.token_count}  in={e.model_in}{rtk_s}"
         )
 

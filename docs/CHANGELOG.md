@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.5.0 - 2026-08-28
+
+Codex subscription accounts become routing destinations: `"auth": "codex"` in the `openai-responses` group rides the local Codex CLI login (`$CODEX_HOME/auth.json`) instead of an API key, so the subscription's own models mix into flash/pro routing next to key-based providers — cheap traffic to StepFun/GLM/deepseek keys, hard traffic to the Codex account. Any Responses-speaking agent points at awerouter with a dummy key and reaches the Codex backend through the same transparent proxy as everything else (wire contract verified against the live backend, mirroring awewarm's native transport: Bearer access_token + chatgpt-account-id + OpenAI-Beta/originator headers).
+
+### Added
+- `awerouter.codex`: `AUTH_SENTINEL` ("codex"), `load_codex_login()` (accepts both the `{"tokens": {...}}` shell and a flat block), `apply_codex_auth()` writing the full header set. `_set_auth` dispatches on the sentinel; requests carry a fresh read of `auth.json` every time.
+- 401 handling: the login file may change under a running serve (the CLI refreshes it) — an upstream 401 re-reads `auth.json` and retries the same destination once. A 401 that survives the re-read means the login itself is rejected: flash requests then take the flash→pro fallback (one printed line per fallback) when pro carries its own key, and surface the 401 only when pro rides the same codex login. A missing/invalid login file is a 503 with a `run: codex login` hint and no fallback — a missing login is a config error best surfaced immediately, not silently served from a paid pro; serve also prints a startup warning when `auth.json` doesn't exist yet. The 401 re-read is recorded in the request log (`codex_retried`), shown by `usage log` as a `401-retry` marker, so CLI token churn is visible in calibration data instead of hiding inside a 200's latency.
+- Body normalization for codex providers: `store` is forced to `false` (the ChatGPT Codex backend is zero-data-retention and rejects `store: true`) and `max_output_tokens` is dropped (sampling controls are CLI-internal; clients that send them get 400s). The backend's SSE-only nature is bridged — a non-streaming request goes upstream as a stream and returns buffered into a single JSON response object, with output items rebuilt from `response.output_item.done` events (the terminal object omits them). Everything else passes through untouched as always.
+- Proxy awareness, codex providers only: `_codex_proxy()` resolves `https_proxy`/`all_proxy` (plus macOS system settings via `getproxies()`) — chatgpt.com commonly needs the shell proxy. Loopback base_urls never take the proxy; socks-only setups are ignored (would need aiohttp-socks); every other provider keeps its direct connection, byte-identical behavior.
+- Config guard: the `codex` sentinel dies at load in non-`openai-responses` groups (the backend speaks Responses only); `config show` renders it as `codex (local CLI login)`. Default providers template ships a ready-to-use `codex` entry in the `openai-responses` group.
+
+### Behavior notes
+- No token refresh, ever, by design: OpenAI refresh tokens are single-use and rotating — server-side refresh would invalidate the local CLI's login. The CLI keeps sole ownership of refresh; awerouter re-reads the file per request (and once more on 401). Access tokens live ~10 days; normal `codex` usage (or awewarm warm-ups) keeps the login fresh.
+- Codex model names drift (`gpt-5-codex`/`gpt-5.1-codex` already 400); the destination's `model` field is the single place to update.
+- Existing providers are untouched: static keys, no-auth locals, and the retry/fallback ladder behave exactly as before.
+
 ## v0.4.9 - 2026-08-24
 
 Local models become first-class routing destinations: `auth` is now optional in providers.json, so local inference servers (Ollama, LM Studio, llama.cpp, vLLM) take their place next to API-key providers under the same protocol groups — and since flash→pro fallback already fires on connection errors, a flash=local / pro=cloud profile gives you local-first routing with a transparent cloud safety net. Ollama ≥ 0.14 speaks the Anthropic protocol natively, so even Claude Code profiles can put a local model on flash.

@@ -68,6 +68,7 @@ def append(log: RequestLog) -> None:
             "rtk_saved": log.rtk_saved,
             "protocol": log.protocol,
             "agent": log.agent,
+            "codex_retried": log.codex_retried,
         }, ensure_ascii=False) + "\n")
 
 
@@ -132,6 +133,7 @@ def tail(n: int | None = 20) -> list[RequestLog]:
                 rtk_saved=data.get("rtk_saved", 0),
                 protocol=data.get("protocol", ""),
                 agent=data.get("agent", ""),
+                codex_retried=data.get("codex_retried", False),
             ))
         except json.JSONDecodeError:
             continue

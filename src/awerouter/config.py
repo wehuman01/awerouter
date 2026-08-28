@@ -14,6 +14,7 @@ import click
 from urllib.parse import urlparse
 
 from awerouter import __version__
+from awerouter.codex import AUTH_SENTINEL
 from awerouter.protocols import PROTOCOL_IDS
 from awerouter.types import AutoThresholdConfig, Destination, Provider, RoutingProfile, Settings, ToolRoutingConfig
 
@@ -193,6 +194,12 @@ def load_providers(path: Optional[Path] = None) -> dict[str, dict[str, Provider]
             base_url = entry.get("base_url")
             # auth absent / null / "" = no-auth upstream (local model servers).
             auth = entry.get("auth") or None
+            if auth == AUTH_SENTINEL and protocol != "openai-responses":
+                die(
+                    f"provider '{protocol}.{name}': auth '{AUTH_SENTINEL}' (local Codex CLI "
+                    "login) belongs in the openai-responses group — the ChatGPT Codex "
+                    "backend speaks the Responses protocol"
+                )
             if not base_url:
                 die(f"provider '{protocol}.{name}' missing base_url")
             auth_header = entry.get("auth_header") or detect_auth_header(base_url)
@@ -463,6 +470,8 @@ def format_providers_display(all_providers: dict[str, dict[str, Provider]]) -> s
             entry = {"base_url": p.base_url, "auth_header": p.auth_header}
             if not p.auth:
                 entry["auth"] = None  # no-auth upstream (local model server)
+            elif p.auth == AUTH_SENTINEL:
+                entry["auth"] = "codex (local CLI login)"
             elif ENV_REF_RE.fullmatch(str(p.auth)):
                 entry["auth"] = str(p.auth)
             else:

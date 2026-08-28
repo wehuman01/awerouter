@@ -208,6 +208,35 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 
 防呆：`auth` 为空但 `base_url` **不在**本机的 provider，serve 启动时会打一行警告（`awerouter add` 向导在同情况下会当场确认）。局域网免认证服务是合法场景——警告只提示、不拦截。
 
+### Codex 账号（订阅登录）
+
+`openai-responses` 组里的 `"auth": "codex"` 表示用本地 Codex CLI 的登录态（`$CODEX_HOME/auth.json`，默认 `~/.codex/auth.json`）代替 API key——订阅自带的模型就能和 key 计费的模型混在同一个 flash/pro 路由里：
+
+```json
+"openai-responses": {
+  "stepfun": { "base_url": "https://api.stepfun.com/step_plan/v1", "auth": "${STEPFUN_AUTH_TOKEN}" },
+  "codex":   { "base_url": "https://chatgpt.com/backend-api/codex", "auth": "codex" }
+}
+```
+
+```json
+"destinations": {
+  "flash": "stepfun,step-router-v1",
+  "pro":   "codex,gpt-5.6-luna"
+}
+```
+
+任何说 Responses 协议的客户端（Codex 本身，或任何能配 OpenAI Responses base URL 的 agent）把 base URL 指到 awerouter、随便填个哑 key 即可；真正的 `Authorization: Bearer <access_token>` 和 `chatgpt-account-id` 头由 awerouter 每个请求现盖。针对后端的几个怪癖会做少量归一化：`store` 强制为 `false`（零数据保留，拒绝 `store: true`）、`max_output_tokens` 直接剥掉（会被拒）、后端没有非流式模式——非流式请求在上游以 SSE 运行，回程收敛成单个 JSON 响应（output 条目从流事件重建），流式/非流式客户端都能直接用。
+
+行为要点：
+
+- **只读登录态，不做刷新。** OpenAI 的 refresh token 是单次有效、旋转式的——在这里刷新会把本地 CLI 的登录踢失效，所以刷新职责永远归 CLI。awerouter 每个请求都重读 `auth.json`，遇到上游 401 还会再重读重试一次（通常是 CLI 刚刷新过）。重读后仍然 401 说明登录真的过期了：flash 请求会兜底到带 key 的 pro（每次兜底打印一行，`usage log` 里带 `401-retry` 标记）；只有 pro 也骑同一个 codex 登录时才把 401 透传给客户端。access token 实测约 10 天有效——照常使用 `codex`（或 awewarm 保温）即可保持登录新鲜。
+- **感知系统代理。** codex provider 遵循 `https_proxy`/`all_proxy`（和 Codex CLI 遵循的同一组变量）——chatgpt.com 在很多网络下必须走 shell 代理才通。其他 provider 永远直连，行为不变。
+- **模型名会漂移。** `gpt-5-codex`/`gpt-5.1-codex` 已被后端 400 拒绝，当前可用的是 CLI 在用的名字（写作本文时是 `gpt-5.6-luna`）。模型名来自 destination 配置，改名只需改 routing.json 一行。
+- **没登录？** `auth.json` 缺失或无效时请求返回 503 并提示 `run: codex login`，serve 启动时也会打一行警告。这里刻意不做兜底（区别于会话中途过期）：登录缺失是配置错误，应该立刻暴露——静默落到付费 pro 会把错误和账单一起藏起来。
+
+该哨兵值只允许出现在 `openai-responses` 组——ChatGPT Codex 后端只说 Responses 协议，进不了 `anthropic`/`openai-chat` 的 profile。
+
 **routing.json** — 路由策略，不含密钥（可以进 git）：
 
 ```json
@@ -311,7 +340,7 @@ awerouter usage savings
 
 所有 `usage` 子命令读的是同一份请求日志。`log`、`stats`、`tokens`、`calibrate` 和 `savings` 直接接受 `--since`（`today`、`yesterday`、`7d` 或 `YYYY-MM-DD`，本地时间）和 `--profile`——例如 `awerouter usage stats --since today --profile cc-1`；`clean` 删除全部日志，不接受窗口选项。
 
-`usage stats` 按 profile 汇总：label/destination/provider/model 分组（带百分比）、错误与降级计数、各 destination/provider/model 的延迟分位数（首字节与总时长）、估算请求 token（全部请求内容：messages、system prompt、工具定义与工具 I/O）。`--since` 接受 `today`、`yesterday`、`7d` 或 `YYYY-MM-DD`（本地时间）；`--profile` 只看单个 profile。`usage clean` 确认后删除已保存的日志（`requests.jsonl` 及轮转备份）。`usage log` 原样显示条目——默认最后 20 条，加 `--all` 显示全部；`--tokens` 把 status/延迟/入站 model 三列换成每条请求的分类型 token 明细（`msg/sys/tools/results/calls/think`），分类型计数之前记录的条目只显示总数。
+`usage stats` 按 profile 汇总：label/destination/provider/model 分组（带百分比）、错误与降级计数、各 destination/provider/model 的延迟分位数（首字节与总时长）、估算请求 token（全部请求内容：messages、system prompt、工具定义与工具 I/O）。`--since` 接受 `today`、`yesterday`、`7d` 或 `YYYY-MM-DD`（本地时间）；`--profile` 只看单个 profile。`usage clean` 确认后删除已保存的日志（`requests.jsonl` 及轮转备份）。`usage log` 原样显示条目——默认最后 20 条，加 `--all` 显示全部；codex 登录重读重试过的请求带 `401-retry` 标记；`--tokens` 把 status/延迟/入站 model 三列换成每条请求的分类型 token 明细（`msg/sys/tools/results/calls/think`），分类型计数之前记录的条目只显示总数。
 
 `config edit` 和 `add` 向导在每次写入前把目标文件快照为 `<名称>.json.bak`；`awerouter restore [providers|routing]` 确认后把备份拷回并校验恢复后的配置。`config path` 打印两个配置文件路径；`config show [PROFILE]` 显示脱敏全量配置，或单个 profile 用到的 provider 与路由条目。
 

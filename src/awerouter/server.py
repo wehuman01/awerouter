@@ -14,6 +14,7 @@ import errno
 import json
 import os
 import time
+import urllib.request
 import uuid
 
 import aiohttp
@@ -21,6 +22,7 @@ from aiohttp import web
 
 from awerouter import __version__
 from awerouter import rtk
+from awerouter.codex import AUTH_SENTINEL, CodexAuthError, apply_codex_auth, auth_json_path
 from awerouter.config import die, expand_value, is_loopback_url
 from awerouter.logging import append, auto_threshold, ensure_log_dir
 from awerouter.protocols import ENDPOINT_PATHS, extract
@@ -69,11 +71,15 @@ def _set_auth(headers: dict, provider, env: dict | None = None) -> None:
 
     No-auth providers (local model servers) send no auth header at all — the
     client's incoming key is dropped, not forwarded. Authorization header
-    auto-prefixes 'Bearer ' if the value lacks it.
+    auto-prefixes 'Bearer ' if the value lacks it. The 'codex' sentinel loads
+    the local Codex CLI login and writes the ChatGPT account header set.
     """
     headers.pop("authorization", None)
     headers.pop("x-api-key", None)
     if not provider.auth:
+        return
+    if provider.auth == AUTH_SENTINEL:
+        apply_codex_auth(headers)
         return
     auth_value = expand_value(provider.auth, env)
     if provider.auth_header == "authorization" and not auth_value.lower().startswith("bearer "):
@@ -113,6 +119,47 @@ def _agent_from_ua(ua: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _codex_proxy(base_url: str) -> "str | None":
+    """chatgpt.com commonly needs the shell proxy to be reachable; honor the
+    same env vars codex CLI and awewarm honor (https_proxy/all_proxy, system
+    settings on macOS). Loopback targets never take the proxy (local relays);
+    other providers stay direct, exactly as before."""
+    if is_loopback_url(base_url):
+        return None
+    proxies = urllib.request.getproxies()
+    proxy = proxies.get("https") or proxies.get("all")
+    if proxy and not proxy.startswith(("http://", "https://")):
+        return None  # socks proxies would need aiohttp-socks; not a dependency
+    return proxy
+
+
+def _codex_sse_response(raw: bytes) -> "dict | None":
+    """Extract the final `response` object from a codex SSE stream.
+
+    Returns the object carried by the last response.completed / response.failed
+    event, or None when the stream ended without either (truncated / no
+    terminal event). The codex backend's terminal object omits the output
+    items, so they are rebuilt from the response.output_item.done events.
+    """
+    found = None
+    items = []
+    for line in raw.decode("utf-8", "replace").splitlines():
+        if not line.startswith("data:"):
+            continue
+        try:
+            payload = json.loads(line[5:].strip())
+        except json.JSONDecodeError:
+            continue
+        ptype = payload.get("type")
+        if ptype == "response.output_item.done" and isinstance(payload.get("item"), dict):
+            items.append(payload["item"])
+        elif ptype in ("response.completed", "response.failed"):
+            found = payload.get("response")
+    if isinstance(found, dict) and not found.get("output") and items:
+        found["output"] = items
+    return found
+
+
 async def _proxy_request(
     session: aiohttp.ClientSession,
     body: dict,
@@ -129,6 +176,16 @@ async def _proxy_request(
     # Rewrite model to the destination's real model id (copy: body is reused across retries)
     body = dict(body)
     body["model"] = dest.model
+    if provider.auth == AUTH_SENTINEL:
+        # The ChatGPT Codex backend is zero-data-retention: the CLI itself
+        # always sends store=false, and a client's store=true is rejected.
+        body["store"] = False
+        # Sampling controls are CLI-internal; clients that send them get 400s.
+        body.pop("max_output_tokens", None)
+        if not body.get("stream"):
+            # The backend only speaks SSE. A non-streaming client gets the
+            # stream buffered back into one JSON response (in _proxy_flow).
+            body["stream"] = True
 
     # Auth
     _set_auth(headers, provider, os.environ)
@@ -139,6 +196,7 @@ async def _proxy_request(
         headers=headers,
         timeout=timeout,
         allow_redirects=False,
+        proxy=_codex_proxy(provider.base_url) if provider.auth == AUTH_SENTINEL else None,
     )
 
 
@@ -176,6 +234,8 @@ class _RoutingState:
         self.result = _resolve_for_request(body, profile, settings)
         self.attempt = 0
         self.streaming_started = False
+        self.codex_retried = False
+        self.codex_stream_fix = False
 
 
 def _log_failure(state: _RoutingState, request_id: str, t0: float, status: int) -> None:
@@ -200,6 +260,7 @@ def _log_failure(state: _RoutingState, request_id: str, t0: float, status: int) 
         profile=state.profile.name,
         protocol=state.profile.protocol,
         agent=state.agent,
+        codex_retried=state.codex_retried,
     ))
 
 
@@ -256,10 +317,21 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
         dest_key = state.result.destination
         dest = state.profile.destinations[dest_key]
         state.attempt += 1
+        state.codex_stream_fix = (
+            providers[dest.provider_name].auth == AUTH_SENTINEL
+            and not state.body.get("stream")
+        )
 
         try:
             up = await _proxy_request(
                 session, state.body, dest, providers, dict(headers), path, timeout
+            )
+        except CodexAuthError as exc:
+            # Local login missing/invalid — retrying can't help; tell the user.
+            _log_failure(state, request_id, t0, 503)
+            raise web.HTTPServiceUnavailable(
+                text=json.dumps({"error": {"message": str(exc)}}),
+                content_type="application/json",
             )
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             # Network-level failure
@@ -280,6 +352,69 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
             up.close()
             state.result = _fallback_result(state)
             continue
+
+        # A codex-account 401 usually means the login file changed under us
+        # (the local CLI refreshed it): re-read auth.json and retry the same
+        # destination once before surfacing the 401 to the client.
+        if (status == 401 and providers[dest.provider_name].auth == AUTH_SENTINEL
+                and not state.codex_retried):
+            up.close()
+            state.codex_retried = True
+            state.attempt -= 1  # login re-read, not a fallback attempt
+            continue
+
+        # Second 401: the login itself is rejected (dead account token, not a
+        # mid-flight refresh). When flash rides the codex login and pro has its
+        # own key, the same flash→pro rescue as transient failures keeps the
+        # request alive — one printed line per fallback, so a dead login is
+        # loud instead of silently burning paid pro. Pro on the same codex
+        # login can't help; the 401 surfaces as before.
+        if (status == 401 and providers[dest.provider_name].auth == AUTH_SENTINEL
+                and dest_key == "flash" and state.attempt == 1
+                and providers[state.profile.destinations["pro"].provider_name].auth != AUTH_SENTINEL):
+            up.close()
+            print(f"  codex 401 -> login rejected after re-read; {request_id} falls back to pro")
+            state.result = _fallback_result(state)
+            continue
+
+        # A codex 200 for a non-streaming client: the upstream ran SSE (the
+        # backend has no non-streaming mode) — buffer it back into one JSON
+        # response object, which is what the client asked for.
+        if (state.codex_stream_fix and status == 200):
+            raw = await up.read()
+            up.close()
+            byte_count = len(raw)
+            ms = int((time.monotonic() - t0) * 1000)
+            ensure_log_dir()
+            append(RequestLog(
+                ts=_now_iso(),
+                request_id=request_id,
+                model_in=state.inbound_model or "<none>",
+                label=state.result.label,
+                destination=dest_key,
+                provider=dest.provider_name,
+                model_out=dest.model,
+                status=status,
+                ms=ms,
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                bytes=byte_count,
+                token_count=state.result.inspect.token_count,
+                tokens=state.result.inspect.token_breakdown,
+                file_search_tokens=state.result.inspect.file_search_tokens,
+                rtk_saved=state.rtk_saved,
+                profile=profile.name,
+                protocol=profile.protocol,
+                agent=state.agent,
+                codex_retried=state.codex_retried,
+            ))
+            obj = _codex_sse_response(raw)
+            if obj is None:
+                return web.json_response(
+                    {"error": {"message": "codex upstream stream ended without a completed response"}},
+                    status=502)
+            if obj.get("error"):
+                return web.json_response(obj, status=500)
+            return web.json_response(obj)
 
         # Success path or non-fallbackable error — stream back
         ms = int((time.monotonic() - t0) * 1000)
@@ -338,6 +473,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
             profile=profile.name,
             protocol=profile.protocol,
             agent=state.agent,
+            codex_retried=state.codex_retried,
         ))
 
         return resp
@@ -565,6 +701,21 @@ def _noauth_warning(providers: dict) -> "str | None":
     )
 
 
+def _codex_login_warning(providers: dict) -> "str | None":
+    """Codex-login providers with no local login yet — every request to them
+    503s with a 'codex login' hint until the CLI logs in."""
+    offenders = sorted(
+        p.name for p in providers.values()
+        if p.auth == AUTH_SENTINEL and not auth_json_path().exists()
+    )
+    if not offenders:
+        return None
+    return (
+        "warning: no codex login for providers: " + ", ".join(offenders) + "\n"
+        f"  ({auth_json_path()} — run: codex login)"
+    )
+
+
 async def _serve(host: str, port: int, providers: dict, profile, settings,
                  port_explicit: bool = False) -> None:
     auto_line = _resolve_auto_threshold(profile, settings)
@@ -638,6 +789,10 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
         print()
         print(warning)
     warning = _noauth_warning(providers)
+    if warning:
+        print()
+        print(warning)
+    warning = _codex_login_warning(providers)
     if warning:
         print()
         print(warning)

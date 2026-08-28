@@ -208,6 +208,22 @@ class TestLoadProviders:
         with pytest.raises(SystemExit, match="protocol id"):
             load_providers()
 
+    def test_codex_sentinel_loads_in_responses_group(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"openai-responses": {
+            "codex": {"base_url": "https://chatgpt.com/backend-api/codex", "auth": "codex"},
+        }}, {})
+        result = load_providers()
+        assert result["openai-responses"]["codex"].auth == "codex"
+
+    def test_codex_sentinel_in_other_group_dies(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"anthropic": {
+            "codex": {"base_url": "https://chatgpt.com/backend-api/codex", "auth": "codex"},
+        }}, {})
+        with pytest.raises(SystemExit, match="openai-responses"):
+            load_providers()
+
 
 # ---------------------------------------------------------------------------
 # load_routing (settings + profiles)
@@ -666,6 +682,14 @@ class TestFormatDisplay:
         }
         data = json.loads(format_providers_display(all_providers))
         assert data["anthropic"]["ollama"]["auth"] is None
+
+    def test_providers_codex_sentinel_labeled(self):
+        all_providers = {
+            "openai-responses": {"codex": Provider(
+                "codex", "https://chatgpt.com/backend-api/codex", "codex")},
+        }
+        data = json.loads(format_providers_display(all_providers))
+        assert data["openai-responses"]["codex"]["auth"] == "codex (local CLI login)"
 
     def test_routing_shows_settings_and_profiles(self):
         settings = Settings(background_model="flash", think_model="pro", web_search_model="pro")

@@ -64,7 +64,8 @@ Do not run these inside the agent:
     "ollama":  { "base_url": "http://127.0.0.1:11434/v1" }
   },
   "openai-responses": {
-    "openai": { "base_url": "https://api.openai.com/v1", "auth": "${OPENAI_API_KEY}" }
+    "openai": { "base_url": "https://api.openai.com/v1", "auth": "${OPENAI_API_KEY}" },
+    "codex":  { "base_url": "https://chatgpt.com/backend-api/codex", "auth": "codex" }
   }
 }
 ```
@@ -72,6 +73,7 @@ Do not run these inside the agent:
 Rules:
 - `base_url` uses each native client's convention. Copy it from the client config.
 - `auth` supports `${ENV_VAR}` references. It may be omitted for no-auth upstreams (local model servers: Ollama, LM Studio, llama.cpp, vLLM) — requests then go out with no auth header. Local servers sit under `openai-chat` with a `/v1` base_url; Ollama ≥ 0.14 also speaks the anthropic protocol.
+- `auth: "codex"` (openai-responses group only) rides the local Codex CLI login (`$CODEX_HOME/auth.json`): per-request Bearer access_token + `chatgpt-account-id`, honors `https_proxy`/`all_proxy`, 401 re-reads the login once; a 401 surviving the re-read falls back flash→pro when pro has its own key (pro on the same login surfaces the 401). Body normalized for backend quirks: `store` forced false, `max_output_tokens` dropped, and non-streaming requests go upstream as a stream and return buffered as one JSON response. No refresh by design — the CLI owns refresh; missing login = 503 with a `codex login` hint (deliberately no fallback there: a missing login is a config error, and silently serving it from a paid pro would hide both). Codex model names drift (current: `gpt-5.6-luna`), so the destination's `model` may need a one-line update over time.
 - `auth_header` is optional. If omitted, awerouter auto-detects:
   - `anthropic.com` -> `x-api-key`
   - others -> `Authorization` with auto `Bearer ` prefix when needed.
