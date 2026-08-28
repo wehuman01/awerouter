@@ -124,6 +124,21 @@ class TestInit:
         assert r.exit_code != 0
         assert "already exists" in r.output
 
+    def test_init_named_template(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch)
+        r = CliRunner().invoke(cli, ["init", "glm-codex"])
+        assert r.exit_code == 0
+        assert "template: glm-codex" in r.output
+        routing = json.loads((tmp_path / "routing.json").read_text())
+        assert routing["cc-router-1"]["protocol"] == "openai-responses"
+
+    def test_init_unknown_template(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch)
+        r = CliRunner().invoke(cli, ["init", "nope"])
+        assert r.exit_code != 0
+        assert "unknown template 'nope'" in r.output
+        assert "step-glm" in r.output
+
 
 class TestList:
     def test_lists_profiles(self, tmp_path, monkeypatch):

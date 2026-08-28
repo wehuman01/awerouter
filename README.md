@@ -120,7 +120,7 @@ Quick Start:
 
 ```bash
 # 1. Init config (creates ~/.config/awerouter/{providers,routing}.json)
-awerouter init
+awerouter init                # or pick a bundled combo: awerouter init step-glm / glm-codex (see "Common setup templates")
 
 # 2. Interactively add a profile (writes both files, references stay consistent)
 awerouter add
@@ -269,6 +269,52 @@ Point any Anthropic-protocol client at awerouter with a dummy key (Claude Code v
 
 The sentinel only loads in the `anthropic` group — the subscription backend speaks the Messages protocol.
 
+### Common setup templates
+
+`awerouter init` takes an optional bundled template name and generates a matching `providers.json` + `routing.json` pair in one shot (no name: `default`). Two ready-made combos ship out of the box; hand-copying any snippet below into your own config works just as well. Keys are `${ENV_VAR}` placeholders — a missing env var dies at startup with a clear message.
+
+**step-glm** — key-only Chinese two-tier combo: flash on StepFun step_plan, pro on the GLM coding plan. For agents speaking the openai-chat protocol:
+
+```json
+"openai-chat": {
+  "stepfun": { "base_url": "https://api.stepfun.com/step_plan/v1",        "auth": "${STEPFUN_AUTH_TOKEN}" },
+  "glm":     { "base_url": "https://open.bigmodel.cn/api/coding/paas/v4", "auth": "${GLM_API_KEY}" }
+}
+```
+
+```json
+"destinations": {
+  "flash": "stepfun,step-3.7-flash",
+  "pro":   "glm,glm-5.3"
+}
+```
+
+```bash
+awerouter init step-glm      # needs STEPFUN_AUTH_TOKEN and GLM_API_KEY
+```
+
+**glm-codex** — the GLM coding plan soaks up flash traffic, a ChatGPT subscription (`"auth": "codex"`, see above) handles pro:
+
+```json
+"openai-responses": {
+  "glm":   { "base_url": "https://open.bigmodel.cn/api/v1",       "auth": "${GLM_API_KEY}" },
+  "codex": { "base_url": "https://chatgpt.com/backend-api/codex", "auth": "codex" }
+}
+```
+
+```json
+"destinations": {
+  "flash": "glm,glm-5.3-flash",
+  "pro":   "codex,gpt-5.6-terra"
+}
+```
+
+```bash
+awerouter init glm-codex     # needs GLM_API_KEY, plus a ChatGPT subscription via codex login
+```
+
+Backend model names drift (see the Codex account section) — renaming is a one-line change in routing.json.
+
 **routing.json** — strategy, no secrets (safe to commit):
 
 ```json
@@ -352,7 +398,7 @@ Compression is inspired by [rtk](https://github.com/rtk-ai/rtk) (Apache 2.0) and
 ## Commands
 
 ```bash
-awerouter init                        # create default config from templates
+awerouter init [TEMPLATE]             # create config from a bundled template (default / step-glm / glm-codex)
 awerouter add                         # interactively add a profile (pick category and providers)
 awerouter list                        # list profiles (name, protocol, port, flash, pro, threshold)
 awerouter serve [PROFILE] [--port N] [--host 127.0.0.1]  # port: --port > profile 'port' > 20128

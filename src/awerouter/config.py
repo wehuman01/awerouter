@@ -29,8 +29,8 @@ SECRET_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|AUTH)", re.IGNORECASE)
 # Implicit listen port: the first serve instance takes it, later ones scan up.
 DEFAULT_PORT = 20128
 
-TEMPLATE_PROVIDERS = Path(__file__).parent / "default-providers.json"
-TEMPLATE_ROUTING = Path(__file__).parent / "default-routing.json"
+# Bundled templates: <name>.providers.json + <name>.routing.json pairs.
+TEMPLATE_DIR = Path(__file__).parent / "resources" / "templates"
 
 
 def die(message: str) -> "SystemExit":
@@ -421,15 +421,28 @@ def load_default_profile() -> tuple[dict[str, Provider], RoutingProfile, Setting
 # Init / template
 # ---------------------------------------------------------------------------
 
-def init_config() -> None:
+def available_templates() -> list[str]:
+    """Names of bundled template pairs (<name>.providers.json + <name>.routing.json)."""
+    names = []
+    for p in TEMPLATE_DIR.glob("*.providers.json"):
+        name = p.name[: -len(".providers.json")]
+        if (TEMPLATE_DIR / f"{name}.routing.json").exists():
+            names.append(name)
+    return sorted(names)
+
+
+def init_config(template: str = "default") -> None:
     d = config_dir()
     if providers_path().exists() or routing_path().exists():
         die(f"config already exists in {d}")
     d.mkdir(parents=True, exist_ok=True)
-    if not TEMPLATE_PROVIDERS.exists() or not TEMPLATE_ROUTING.exists():
-        die("default templates not found next to config.py")
-    shutil.copy2(TEMPLATE_PROVIDERS, providers_path())
-    shutil.copy2(TEMPLATE_ROUTING, routing_path())
+    src_providers = TEMPLATE_DIR / f"{template}.providers.json"
+    src_routing = TEMPLATE_DIR / f"{template}.routing.json"
+    if not src_providers.exists() or not src_routing.exists():
+        avail = ", ".join(available_templates()) or "(none)"
+        die(f"unknown template '{template}'; available: {avail}")
+    shutil.copy2(src_providers, providers_path())
+    shutil.copy2(src_routing, routing_path())
 
 
 def save_provider(protocol: str, name: str, base_url: str, auth: "str | None") -> None:
@@ -690,9 +703,11 @@ def config_edit_cmd(file):
 
 
 @cli.command("init")
-def init_cmd():
-    """Create default config from templates."""
-    init_config()
+@click.argument("template", required=False, default="default")
+def init_cmd(template):
+    """Create config from a bundled template (no argument: 'default')."""
+    init_config(template)
+    click.echo(f"template: {template}")
     click.echo(config_dir())
 
 

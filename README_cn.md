@@ -120,7 +120,7 @@ pip install awerouter
 
 ```bash
 # 1. 初始化配置（生成 ~/.config/awerouter/{providers,routing}.json）
-awerouter init
+awerouter init                # 也可选内置搭配：awerouter init step-glm / glm-codex（见「常见搭配模版」）
 
 # 2. 交互式添加 profile（自动写入两个文件，保证引用一致）
 awerouter add
@@ -269,6 +269,52 @@ awerouter logout claude   # 删除本地登录
 
 该哨兵值只允许出现在 `anthropic` 组——订阅后端说的是 Messages 协议。
 
+### 常见搭配模版
+
+`awerouter init` 支持内置模板名，一次生成配套的 `providers.json` + `routing.json`（不传名字即 `default`）。下面两套开箱即用；不想跑命令的话，手抄任意一段到自己的配置里也一样。密钥一律 `${ENV_VAR}` 占位，缺失的环境变量在启动时报错。
+
+**step-glm** —— 纯 API key 的国产双档：flash 走 StepFun step_plan，pro 走 GLM coding plan。面向说 openai-chat 协议的 agent：
+
+```json
+"openai-chat": {
+  "stepfun": { "base_url": "https://api.stepfun.com/step_plan/v1",        "auth": "${STEPFUN_AUTH_TOKEN}" },
+  "glm":     { "base_url": "https://open.bigmodel.cn/api/coding/paas/v4", "auth": "${GLM_API_KEY}" }
+}
+```
+
+```json
+"destinations": {
+  "flash": "stepfun,step-3.7-flash",
+  "pro":   "glm,glm-5.3"
+}
+```
+
+```bash
+awerouter init step-glm      # 需要设置 STEPFUN_AUTH_TOKEN 和 GLM_API_KEY
+```
+
+**glm-codex** —— GLM coding plan 消化 flash 流量，ChatGPT 订阅（`"auth": "codex"`，见上文）消化 pro：
+
+```json
+"openai-responses": {
+  "glm":   { "base_url": "https://open.bigmodel.cn/api/v1",       "auth": "${GLM_API_KEY}" },
+  "codex": { "base_url": "https://chatgpt.com/backend-api/codex", "auth": "codex" }
+}
+```
+
+```json
+"destinations": {
+  "flash": "glm,glm-5.3-flash",
+  "pro":   "codex,gpt-5.6-terra"
+}
+```
+
+```bash
+awerouter init glm-codex     # 需要 GLM_API_KEY，且 codex login 登录过 ChatGPT 订阅
+```
+
+后端模型名会漂移（见「Codex 账号」一节）——改名只需动 routing.json 一行。
+
 **routing.json** — 路由策略，不含密钥（可以进 git）：
 
 ```json
@@ -352,7 +398,7 @@ L4 是后果检查点，不是难度猜测。结构信号看不到*决定*编辑
 ## 命令
 
 ```bash
-awerouter init                        # 从模板创建默认配置
+awerouter init [TEMPLATE]             # 从内置模板创建配置（default / step-glm / glm-codex）
 awerouter add                         # 交互式添加 profile（先选类别再选 provider）
 awerouter list                        # 列出 profile（名字、协议、端口、flash、pro、阈值）
 awerouter serve [PROFILE] [--port N] [--host 127.0.0.1]  # 端口优先级：--port > profile 'port' > 20128

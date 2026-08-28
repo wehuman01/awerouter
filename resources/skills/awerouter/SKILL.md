@@ -31,7 +31,7 @@ Main config files:
 ## Safe Commands
 
 You may run these read-only or non-interactive commands:
-- `awerouter init`
+- `awerouter init [TEMPLATE]`
 - `awerouter config path`
 - `awerouter config show [PROFILE]`
 - `awerouter config edit`
@@ -126,14 +126,16 @@ Notes:
 
 ## Common Tasks
 
-### Init default config
+### Init config from a bundled template
 
 Run:
 ```bash
-awerouter init
+awerouter init                    # 'default' template
+awerouter init step-glm           # key-only combo: flash=StepFun step_plan, pro=GLM coding plan
+awerouter init glm-codex          # flash=GLM coding plan, pro=ChatGPT subscription (auth: "codex")
 ```
 
-This creates template `providers.json` and `routing.json` if missing.
+Templates are `<name>.providers.json` + `<name>.routing.json` pairs; an unknown name fails with the list of available ones. This creates `providers.json` and `routing.json` if missing.
 
 ### Inspect current config
 

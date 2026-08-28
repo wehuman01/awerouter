@@ -39,7 +39,7 @@ where = ["src"]
 version = { attr = "awerouter.__version__" }
 
 [tool.setuptools.package-data]
-awerouter = ["py.typed", "default-providers.json", "default-routing.json"]
+awerouter = ["py.typed", "resources/templates/*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

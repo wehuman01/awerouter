@@ -1,0 +1,6 @@
+{
+  "openai-responses": {
+    "glm":   { "base_url": "https://open.bigmodel.cn/api/v1",       "auth": "${GLM_API_KEY}" },
+    "codex": { "base_url": "https://chatgpt.com/backend-api/codex", "auth": "codex" }
+  }
+}

@@ -6,6 +6,7 @@ import pytest
 
 from awerouter.config import (
     _parse_destination,
+    available_templates,
     detect_auth_header,
     die,
     expand_value,
@@ -678,6 +679,35 @@ class TestInitConfig:
         (tmp_path / "routing.json").write_text("{}")
         with pytest.raises(SystemExit, match="already exists"):
             init_config()
+
+    def test_default_writes_parseable_config(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        init_config()
+        assert json.loads((tmp_path / "providers.json").read_text())
+        assert json.loads((tmp_path / "routing.json").read_text())
+
+    def test_named_template(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        init_config("step-glm")
+        routing = json.loads((tmp_path / "routing.json").read_text())
+        assert routing["cc-router-1"]["destinations"] == {
+            "flash": "stepfun,step-3.7-flash",
+            "pro": "glm,glm-5.3",
+        }
+
+    def test_unknown_template_lists_available(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        with pytest.raises(SystemExit, match="unknown template 'nope'"):
+            init_config("nope")
+        assert not (tmp_path / "providers.json").exists()
+
+    @pytest.mark.parametrize("name", available_templates())
+    def test_bundled_templates_validate(self, tmp_path, monkeypatch, name):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        init_config(name)
+        providers_all = load_providers()
+        _, profiles = load_routing()
+        validate_profiles(providers_all, profiles)
 
 
 # ---------------------------------------------------------------------------

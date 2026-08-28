@@ -1,0 +1,24 @@
+{
+  "settings": {
+    "backgroundModel": "flash",
+    "thinkModel": "pro",
+    "toolRouting": {
+      "webSearch": "pro",
+      "edit": "pro"
+    },
+    "longContextAuto": {
+      "percentile": 95,
+      "windowDays": 7,
+      "minSamples": 50,
+      "fallbackThreshold": 8000
+    }
+  },
+  "cc-router-1": {
+    "protocol": "openai-chat",
+    "longContextThreshold": 8000,
+    "destinations": {
+      "flash": "stepfun,step-3.7-flash",
+      "pro":   "glm,glm-5.3"
+    }
+  }
+}
