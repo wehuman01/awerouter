@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.5.1 - 2026-08-28
+
+Two additions on top of v0.5.0's codex story: Claude Pro/Max subscription logins become routing destinations on the Anthropic side, and routing setup gets bundled presets — `awerouter init step-glm` / `glm-codex` generate a matched providers + routing pair for known-good flash/pro combos in one shot.
 
 Claude subscription accounts become routing destinations: `"auth": "claude"` in the `anthropic` group routes through a Claude Pro/Max subscription login that awerouter itself owns — no local Claude Code CLI login is needed (and none is borrowed; each OAuth login is an independent session). Mirrors the codex design where the mechanics allow it and inverts it where they don't: codex is read-only because OpenAI refresh tokens are single-use and the CLI must own refresh, while this login belongs to awerouter, so it refreshes.
 
