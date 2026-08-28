@@ -1,4 +1,4 @@
-"""CLI commands: serve / add / list / config / usage.
+"""CLI commands: serve / add / login / list / config / usage.
 
 Imports the click group from config.py and extends it.
 """
@@ -162,6 +162,60 @@ def add():
     validate_profiles(load_providers(), load_routing()[1])
     click.echo(f"Profile '{name}' added: flash={flash}  pro={pro}  L3>{threshold}")
     click.echo(f"Start it with: awerouter {name}")
+
+
+@cli.command("login")
+@click.argument("account", default="claude",
+                type=click.Choice(["claude", "codex"], case_sensitive=False))
+def login_cmd(account):
+    """Log in a subscription account used by an 'auth' sentinel provider."""
+    account = account.lower()
+    if account == "codex":
+        # The codex CLI owns its login (and its single-use refresh tokens);
+        # awerouter only reads auth.json, so the login happens in the CLI.
+        click.echo("codex logins live in the codex CLI — run: codex login")
+        click.echo("awerouter picks the result up from $CODEX_HOME/auth.json automatically.")
+        return
+    from awerouter import claude
+    if claude.login_status() is not None:
+        click.echo("an existing claude login will be replaced (its tokens become useless).")
+        if not click.confirm("Continue?"):
+            click.echo("aborted")
+            return
+    url, verifier, state = claude.begin_login()
+    click.echo("opening the browser to authorize awerouter as a Claude Code device…")
+    click.echo("(if it does not open, visit the URL below)")
+    click.echo()
+    click.echo(f"  {url}")
+    click.echo()
+    import webbrowser
+    webbrowser.open(url)
+    code = click.prompt("After authorizing, paste the code shown on the callback page")
+    try:
+        payload = claude.complete_login(code.strip(), verifier, state)
+    except claude.ClaudeAuthError as exc:
+        raise SystemExit(f"awerouter: login failed: {exc}")
+    from datetime import datetime, timezone
+    expires = datetime.fromtimestamp(payload["expires_at"], tz=timezone.utc)
+    click.echo(f"claude login saved: {claude.claude_auth_path()}")
+    click.echo(f"  access token valid until {expires:%Y-%m-%d %H:%M} UTC (refreshed automatically)")
+
+
+@cli.command("logout")
+@click.argument("account", default="claude",
+                type=click.Choice(["claude", "codex"], case_sensitive=False))
+def logout_cmd(account):
+    """Remove a stored subscription login."""
+    account = account.lower()
+    if account == "codex":
+        click.echo("codex logins live in the codex CLI — run: codex logout")
+        return
+    from awerouter import claude
+    removed = claude.logout()
+    if removed is None:
+        click.echo(f"no claude login found ({claude.claude_auth_path()})")
+        return
+    click.echo(f"removed {removed}")
 
 
 @cli.command("self-update")

@@ -237,6 +237,38 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 
 该哨兵值只允许出现在 `openai-responses` 组——ChatGPT Codex 后端只说 Responses 协议，进不了 `anthropic`/`openai-chat` 的 profile。
 
+### Claude 账号（订阅登录）
+
+`anthropic` 组里的 `"auth": "claude"` 表示用 Claude Pro/Max 订阅登录作为上游——而且这个登录由 awerouter 自己持有：本机**不需要**（也不会借用）Claude Code CLI 的登录态，`awerouter login claude` 走的就是 Claude Code CLI 同款 PKCE 设备授权流程，token 存在 `~/.config/awerouter/claude-auth.json`（权限 0600）。订阅自带的模型就这样和 key 计费的模型混进同一个 flash/pro 路由：
+
+```json
+"anthropic": {
+  "stepfun": { "base_url": "https://api.stepfun.com/step_plan", "auth": "${STEPFUN_AUTH_TOKEN}" },
+  "claude":  { "base_url": "https://api.anthropic.com", "auth": "claude" }
+}
+```
+
+```json
+"destinations": {
+  "flash": "stepfun,step-router-v1",
+  "pro":   "claude,claude-opus-4-5"
+}
+```
+
+```bash
+awerouter login claude    # 打开浏览器授权，把回调页显示的 code 粘回来
+awerouter logout claude   # 删除本地登录
+```
+
+任何说 Anthropic 协议的客户端把 base URL 指到 awerouter、随便填个哑 key 即可（Claude Code 设 `ANTHROPIC_BASE_URL`——CLI 自己的登录完全不受影响，每次 OAuth 登录都是独立会话）。真正的 `Authorization: Bearer <access_token>` 和 OAuth 必需的 `anthropic-beta: oauth-2025-04-20` 标记由 awerouter 每个请求现盖，请求体不做任何改写。行为要点：
+
+- **刷新归 awerouter。** 和 codex 的只读设计正好相反：这个登录属于 awerouter，所以由它刷新——access token 只有几小时有效，用旋转式 refresh token 自动续期，新 token 原子落盘后请求才继续。进程内锁 + 锁下重读避免并发请求重复刷新；另一个 awerouter 进程抢先刷新也能恢复（刷新被拒 + 文件已变 → 直接用赢家的 token）。
+- **401 处理与 codex 对称。** 上游 401 先强制刷新重试同一 destination 一次；重试后仍然 401 说明登录失效——flash 请求兜底到带 key 的 pro（每次兜底打印一行，`usage log` 里带 `401-retry` 标记），只有 pro 也骑同一个 claude 登录时才把 401 透传。登录缺失返回 503 并提示 `run: awerouter login claude`，serve 启动时同样打警告——和 codex 一样刻意不做兜底。
+- **感知系统代理。** 和 codex provider 一样遵循 `https_proxy`/`all_proxy`——api.anthropic.com 和 platform.claude.com 在很多网络下必须走 shell 代理。
+- **线协议会漂移，注意 ToS。** 端点（client id、`platform.claude.com` 授权/换 token，旧的 `console.anthropic.com` 作为 404/405 回退）和头集合都是社区共用的逆向公开契约，随时可能失效；且 Anthropic 2026 年的政策限制第三方工具使用订阅 OAuth token——这是骑你自己的订阅，风险自担。
+
+该哨兵值只允许出现在 `anthropic` 组——订阅后端说的是 Messages 协议。
+
 **routing.json** — 路由策略，不含密钥（可以进 git）：
 
 ```json

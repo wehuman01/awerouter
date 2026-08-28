@@ -237,6 +237,38 @@ How it behaves:
 
 The sentinel only loads in the `openai-responses` group — the ChatGPT Codex backend speaks the Responses protocol, so it can't sit in `anthropic`/`openai-chat` profiles.
 
+### Claude account (subscription login)
+
+`"auth": "claude"` in the `anthropic` group routes through a Claude Pro/Max subscription login that awerouter itself owns — no local Claude Code CLI login is needed or used (`awerouter login claude` runs the same PKCE device flow the CLI uses; tokens live in `~/.config/awerouter/claude-auth.json`, mode 0600). The subscription's own models mix into flash/pro routing next to key-based providers:
+
+```json
+"anthropic": {
+  "stepfun": { "base_url": "https://api.stepfun.com/step_plan", "auth": "${STEPFUN_AUTH_TOKEN}" },
+  "claude":  { "base_url": "https://api.anthropic.com", "auth": "claude" }
+}
+```
+
+```json
+"destinations": {
+  "flash": "stepfun,step-router-v1",
+  "pro":   "claude,claude-opus-4-5"
+}
+```
+
+```bash
+awerouter login claude    # opens the browser; paste the code shown on the callback page
+awerouter logout claude   # removes the stored login
+```
+
+Point any Anthropic-protocol client at awerouter with a dummy key (Claude Code via `ANTHROPIC_BASE_URL` — the CLI's own login is never touched; each OAuth login is an independent session). The real `Authorization: Bearer <access_token>` plus the OAuth-required `anthropic-beta: oauth-2025-04-20` flag are injected per request; no body normalization is needed. How it behaves:
+
+- **awerouter owns refresh.** The inverse of codex's read-only design: this login belongs to awerouter, so it refreshes — access tokens are short-lived (~hours) and renewed with the rotating refresh token, the new one persisted atomically before the request proceeds. An in-process lock plus a re-read under it keep concurrent requests from racing the refresh; a second awerouter process winning the race is recovered the same way (refresh rejected + file changed underneath → the winner's token is used).
+- **401 handling mirrors codex.** An upstream 401 forces one refresh and retries the same destination; a 401 that survives means the login is dead — flash requests fall back to a keyed pro destination (one printed line per fallback, `401-retry` marker in `usage log`), surfacing the 401 only when pro rides the same claude login. A missing login is a 503 with a `run: awerouter login claude` hint and a serve-start warning — same deliberate no-fallback reasoning as codex.
+- **Proxy-aware** like codex providers (`https_proxy`/`all_proxy`) — api.anthropic.com and platform.claude.com often need the shell proxy.
+- **Wire contract drifts; ToS caveat.** The endpoints (client id, `platform.claude.com` authorize/token, with legacy `console.anthropic.com` as a 404/405 fallback) and the header set are the reverse-engineered public contract shared by every community client — they can break without notice. And per Anthropic's 2026 policy, third-party use of subscription OAuth tokens is ToS-restricted: this rides your own subscription, at your own risk.
+
+The sentinel only loads in the `anthropic` group — the subscription backend speaks the Messages protocol.
+
 **routing.json** — strategy, no secrets (safe to commit):
 
 ```json

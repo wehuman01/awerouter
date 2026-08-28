@@ -45,6 +45,8 @@ You may run these read-only or non-interactive commands:
 Do not run these inside the agent:
 - `awerouter serve` (blocks the session)
 - `awerouter add` (interactive wizard)
+- `awerouter login [claude]` (opens a browser and waits for a pasted code — the user runs it)
+- `awerouter logout [claude]` (deletes a stored credential)
 - `awerouter restore` (overwrites a config file from its `.bak`)
 - `awerouter usage clean` (deletes saved request logs)
 
@@ -57,6 +59,7 @@ Do not run these inside the agent:
   "anthropic": {
     "stepfun":   { "base_url": "https://api.stepfun.com/step_plan", "auth": "${STEPFUN_AUTH_TOKEN}" },
     "anthropic": { "base_url": "https://api.anthropic.com",          "auth": "${ANTHROPIC_KEY}" },
+    "claude":    { "base_url": "https://api.anthropic.com",          "auth": "claude" },
     "ollama":    { "base_url": "http://127.0.0.1:11434" }
   },
   "openai-chat": {
@@ -74,6 +77,7 @@ Rules:
 - `base_url` uses each native client's convention. Copy it from the client config.
 - `auth` supports `${ENV_VAR}` references. It may be omitted for no-auth upstreams (local model servers: Ollama, LM Studio, llama.cpp, vLLM) — requests then go out with no auth header. Local servers sit under `openai-chat` with a `/v1` base_url; Ollama ≥ 0.14 also speaks the anthropic protocol.
 - `auth: "codex"` (openai-responses group only) rides the local Codex CLI login (`$CODEX_HOME/auth.json`): per-request Bearer access_token + `chatgpt-account-id`, honors `https_proxy`/`all_proxy`, 401 re-reads the login once; a 401 surviving the re-read falls back flash→pro when pro has its own key (pro on the same login surfaces the 401). Body normalized for backend quirks: `store` forced false, `max_output_tokens` dropped, and non-streaming requests go upstream as a stream and return buffered as one JSON response. No refresh by design — the CLI owns refresh; missing login = 503 with a `codex login` hint (deliberately no fallback there: a missing login is a config error, and silently serving it from a paid pro would hide both). Codex model names drift (current: `gpt-5.6-luna`), so the destination's `model` may need a one-line update over time.
+- `auth: "claude"` (anthropic group only) routes through a Claude Pro/Max subscription OAuth login that awerouter itself owns — no local Claude Code CLI login needed or used. The user logs in out-of-band with `awerouter login claude` (browser PKCE flow, paste-the-code); tokens live in `~/.config/awerouter/claude-auth.json` (0600). Per-request Bearer access_token + `anthropic-beta: oauth-2025-04-20`; honors `https_proxy`/`all_proxy`; access tokens auto-refresh (rotating refresh token, rotation-safe against concurrent requests/processes). 401 forces one refresh and retries; a 401 surviving it falls back flash→pro when pro has its own key (same as codex); missing login = 503 with an `awerouter login claude` hint. No body normalization. Note: reverse-engineered public endpoints that can drift, and Anthropic's 2026 ToS restricts third-party use of subscription OAuth tokens — user rides their own subscription at their own risk.
 - `auth_header` is optional. If omitted, awerouter auto-detects:
   - `anthropic.com` -> `x-api-key`
   - others -> `Authorization` with auto `Bearer ` prefix when needed.
@@ -190,4 +194,5 @@ Use `awerouter usage tokens` to show input-token totals by content type (message
 - Provider not found -> check protocol group name and provider spelling in `providers.json`.
 - Missing token env var -> set the shell variable before starting `awerouter serve`.
 - Serve-start warning "no auth set for off-machine providers" -> either a forgotten `auth` entry (cloud APIs need one) or a legitimate LAN no-auth server; the warning is informational, not fatal.
+- Requests 503 with "awerouter login claude" -> the stored subscription login is missing/invalid; the user runs `awerouter login claude` in their own terminal (browser + paste the code).
 - Config broken after an edit -> `config edit` and the `add` wizard write a `.bak` before every change; tell the user to run `awerouter restore [providers|routing]` in their own terminal.

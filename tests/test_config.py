@@ -224,6 +224,22 @@ class TestLoadProviders:
         with pytest.raises(SystemExit, match="openai-responses"):
             load_providers()
 
+    def test_claude_sentinel_loads_in_anthropic_group(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"anthropic": {
+            "claude": {"base_url": "https://api.anthropic.com", "auth": "claude"},
+        }}, {})
+        result = load_providers()
+        assert result["anthropic"]["claude"].auth == "claude"
+
+    def test_claude_sentinel_in_other_group_dies(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"openai-chat": {
+            "claude": {"base_url": "https://api.anthropic.com/v1", "auth": "claude"},
+        }}, {})
+        with pytest.raises(SystemExit, match="anthropic"):
+            load_providers()
+
 
 # ---------------------------------------------------------------------------
 # load_routing (settings + profiles)
@@ -690,6 +706,14 @@ class TestFormatDisplay:
         }
         data = json.loads(format_providers_display(all_providers))
         assert data["openai-responses"]["codex"]["auth"] == "codex (local CLI login)"
+
+    def test_providers_claude_sentinel_labeled(self):
+        all_providers = {
+            "anthropic": {"claude": Provider(
+                "claude", "https://api.anthropic.com", "claude")},
+        }
+        data = json.loads(format_providers_display(all_providers))
+        assert data["anthropic"]["claude"]["auth"] == "claude (subscription OAuth login)"
 
     def test_routing_shows_settings_and_profiles(self):
         settings = Settings(background_model="flash", think_model="pro", web_search_model="pro")

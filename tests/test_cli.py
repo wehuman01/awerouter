@@ -625,3 +625,63 @@ class TestCommandSuggestions:
         r = CliRunner().invoke(cli, ["cc-2"])
         assert r.exit_code == 0, r.output
         assert calls == [("cc-2", None, "127.0.0.1")]  # None = resolve in _run_serve
+
+
+class TestLoginLogout:
+    def test_login_claude_runs_pkce_flow(self, tmp_path, monkeypatch):
+        from awerouter import claude
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(claude, "begin_login",
+                            lambda: ("https://platform.claude.com/oauth/authorize?x=1", "ver", "st"))
+        monkeypatch.setattr("webbrowser.open", lambda url: True)
+        monkeypatch.setattr(claude, "complete_login",
+                            lambda code, verifier, state: {
+                                "access_token": "at", "refresh_token": "rt",
+                                "expires_at": 4102444800.0, "scopes": "user:inference"})
+        r = CliRunner().invoke(cli, ["login", "claude"], input="the-code\n")
+        assert r.exit_code == 0, r.output
+        assert "authorize" in r.output          # the URL is shown for manual open
+        assert "claude login saved" in r.output
+
+    def test_login_failure_exits_with_message(self, tmp_path, monkeypatch):
+        from awerouter import claude
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+
+        def rejected(code, verifier, state):
+            raise claude.ClaudeAuthError("invalid authorization code")
+
+        monkeypatch.setattr(claude, "begin_login", lambda: ("u", "v", "s"))
+        monkeypatch.setattr(claude, "complete_login", rejected)
+        r = CliRunner().invoke(cli, ["login"], input="bad-code\n")
+        assert r.exit_code != 0
+        assert "invalid authorization code" in r.output
+
+    def test_login_claude_replaces_only_on_confirm(self, tmp_path, monkeypatch):
+        from awerouter import claude
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-auth.json").write_text(json.dumps(
+            {"access_token": "old", "refresh_token": "rt",
+             "expires_at": 4102444800.0}), encoding="utf-8")
+        r = CliRunner().invoke(cli, ["login", "claude"], input="n\n")
+        assert r.exit_code == 0
+        assert "aborted" in r.output
+
+    def test_login_codex_points_at_the_cli(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch)
+        r = CliRunner().invoke(cli, ["login", "codex"])
+        assert r.exit_code == 0
+        assert "codex login" in r.output
+
+    def test_logout_claude_removes_store(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "claude-auth.json").write_text("{}", encoding="utf-8")
+        r = CliRunner().invoke(cli, ["logout", "claude"])
+        assert r.exit_code == 0
+        assert "removed" in r.output
+        assert not (tmp_path / "claude-auth.json").exists()
+
+    def test_logout_claude_without_store(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        r = CliRunner().invoke(cli, ["logout"])
+        assert r.exit_code == 0
+        assert "no claude login" in r.output

@@ -2,6 +2,7 @@
   "anthropic": {
     "stepfun":   { "base_url": "https://api.stepfun.com/step_plan", "auth": "${STEPFUN_AUTH_TOKEN}" },
     "anthropic": { "base_url": "https://api.anthropic.com",          "auth": "${ANTHROPIC_KEY}" },
+    "claude":    { "base_url": "https://api.anthropic.com",          "auth": "claude" },
     "ollama":    { "base_url": "http://127.0.0.1:11434" }
   },
   "openai-chat": {

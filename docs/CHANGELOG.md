@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+Claude subscription accounts become routing destinations: `"auth": "claude"` in the `anthropic` group routes through a Claude Pro/Max subscription login that awerouter itself owns — no local Claude Code CLI login is needed (and none is borrowed; each OAuth login is an independent session). Mirrors the codex design where the mechanics allow it and inverts it where they don't: codex is read-only because OpenAI refresh tokens are single-use and the CLI must own refresh, while this login belongs to awerouter, so it refreshes.
+
+### Added
+- `awerouter.claude`: PKCE device login (`awerouter login claude` opens the browser, user pastes the code shown on the callback page) against the reverse-engineered public wire contract shared by every community client (client id, `platform.claude.com` authorize/token, legacy `console.anthropic.com` as a 404/405 fallback). Tokens persist in `~/.config/awerouter/claude-auth.json`, written atomically with 0600 perms. `awerouter logout claude` removes the login.
+- Rotation-safe auto-refresh: access tokens are short-lived (~hours, 5-minute margin) and renewed with the rotating refresh token; a response without a new refresh token keeps the old one. An in-process lock plus a re-read under it keep concurrent requests from racing the refresh; a second awerouter process winning the race is recovered the same way (refresh rejected + file changed underneath → the winner's token is used).
+- Request-path integration: per-request `Authorization: Bearer <access_token>` plus the OAuth-required `anthropic-beta: oauth-2025-04-20` flag (merged with any beta flags already present), `anthropic-version` defaulted when the client omitted it. No body normalization — the Messages API is the Messages API. Refresh runs off the event loop (`asyncio.to_thread`), so a renewal never blocks other in-flight requests.
+- 401 handling mirrors codex: an upstream 401 forces one refresh and retries the same destination; a 401 that survives means the login is dead — flash falls back to a keyed pro (one printed line, `401-retry` marker in `usage log`) and only surfaces when pro rides the same login. A missing login is a 503 with a `run: awerouter login claude` hint plus a serve-start warning (store check only — a stale token doesn't warn, it refreshes on the first request).
+- Proxy awareness extends to claude providers (`https_proxy`/`all_proxy`) — api.anthropic.com and platform.claude.com often need the shell proxy. Config guard: the `claude` sentinel dies at load in non-`anthropic` groups; `config show` renders it as `claude (subscription OAuth login)`. Default providers template ships a ready-to-use `claude` entry in the `anthropic` group.
+
+### Behavior notes
+- ToS caveat: per Anthropic's 2026 policy, third-party use of subscription OAuth tokens is restricted — this rides the user's own subscription, at their own risk, and the wire contract can drift without notice (one-constant fixes in `awerouter/claude.py`).
+
 ## v0.5.0 - 2026-08-28
 
 Codex subscription accounts become routing destinations: `"auth": "codex"` in the `openai-responses` group rides the local Codex CLI login (`$CODEX_HOME/auth.json`) instead of an API key, so the subscription's own models mix into flash/pro routing next to key-based providers — cheap traffic to StepFun/GLM/deepseek keys, hard traffic to the Codex account. Any Responses-speaking agent points at awerouter with a dummy key and reaches the Codex backend through the same transparent proxy as everything else (wire contract verified against the live backend, mirroring awewarm's native transport: Bearer access_token + chatgpt-account-id + OpenAI-Beta/originator headers).

@@ -13,9 +13,11 @@ from aiohttp.test_utils import TestClient, TestServer
 from awerouter import __version__
 from awerouter.server import (
     _agent_from_ua,
+    _claude_login_warning,
     _client_hint,
     _codex_login_warning,
     _codex_proxy,
+    _filter_headers,
     _loopback_proxy_warning,
     _noauth_warning,
     _resolve_auto_threshold,
@@ -54,6 +56,12 @@ def run(coro):
 @pytest.fixture(autouse=True)
 def _tmp_log(tmp_path, monkeypatch):
     monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "logs"))
+
+
+def test_filtered_headers_are_normalized_for_auth_replacement():
+    assert _filter_headers({"X-Api-Key": "dummy-client-key"}) == {
+        "x-api-key": "dummy-client-key",
+    }
 
 
 class TestAwerouter:
@@ -708,6 +716,34 @@ class TestCodexAccount:
                 await up_server.close()
         run(t())
         assert d["error"]["message"] == "boom"
+        from awerouter.logging import tail
+        assert tail(1)[0].status == 500
+
+    def test_truncated_sse_logs_client_error_status(self):
+        async def t():
+            async def up(request):
+                return web.Response(
+                    text='data: {"type":"response.created","response":{"id":"r3"}}\n\n',
+                    content_type="text/event-stream",
+                )
+
+            up_app = web.Application()
+            up_app.router.add_post("/responses", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                self._login()
+                async with TestClient(TestServer(self._app(up_server.port))) as c:
+                    r = await c.post("/v1/responses", json={
+                        "model": "auto",
+                        "input": [{"role": "user", "content": "hi"}],
+                    })
+                    assert r.status == 502
+            finally:
+                await up_server.close()
+        run(t())
+        from awerouter.logging import tail
+        assert tail(1)[0].status == 502
 
     def test_401_rereads_login_once(self):
         """A 401 usually means the CLI refreshed the login under us: re-read
@@ -835,6 +871,12 @@ class TestCodexAccount:
         w = _codex_login_warning(providers)
         assert w is not None and "codex login" in w
 
+    def test_serve_warning_with_invalid_login(self):
+        (self.home / "auth.json").write_text("{}", encoding="utf-8")
+        providers = {"codex": Provider("codex", "https://chatgpt.com/backend-api/codex", "codex")}
+        w = _codex_login_warning(providers)
+        assert w is not None and "access_token" in w
+
     def test_no_serve_warning_with_login(self):
         self._login()
         providers = {"codex": Provider("codex", "https://chatgpt.com/backend-api/codex", "codex")}
@@ -865,6 +907,216 @@ class TestCodexAccount:
     def test_no_proxies_direct(self, monkeypatch):
         self._proxies(monkeypatch, {})
         assert _codex_proxy(self.REMOTE) is None
+
+
+class TestClaudeAccount:
+    """"auth": "claude" providers ride the awerouter-owned OAuth login."""
+
+    @pytest.fixture(autouse=True)
+    def _store_dir(self, tmp_path, monkeypatch):
+        d = tmp_path / "cfg"
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(d))
+        self.dir = d
+
+    def _login(self, access_token="tok-1", refresh_token="rt-1",
+               expires_at=None):
+        import time as _time
+        path = self.dir / "claude-auth.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at if expires_at is not None else _time.time() + 3600,
+        }), encoding="utf-8")
+
+    def _app(self, port, flash="claude", pro="claude"):
+        providers = {
+            "claude": Provider("claude", f"http://127.0.0.1:{port}", "claude"),
+            "deepseek": Provider("deepseek", f"http://127.0.0.1:{port}", "sk-x"),
+        }
+        profile = RoutingProfile("cc", "anthropic", 32, {
+            "flash": Destination(flash, "claude-sonnet-4-5"),
+            "pro": Destination(pro, "claude-opus-4-5"),
+        })
+        return create_app(providers, profile, SETTINGS)
+
+    def test_headers_replace_client_key(self):
+        """Bearer access token + oauth beta flag replace the client's dummy key."""
+        captured = {}
+
+        async def t():
+            async def up(request):
+                captured.update({
+                    "authorization": request.headers.get("authorization"),
+                    "beta": request.headers.get("anthropic-beta"),
+                    "version": request.headers.get("anthropic-version"),
+                    "x_api_key": request.headers.get("x-api-key"),
+                })
+                body = await request.json()
+                captured["body"] = body
+                return web.json_response({"model": body["model"]})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                self._login("tok-9")
+                async with TestClient(TestServer(self._app(up_server.port))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "auto",
+                        "messages": [{"content": "hi"}],
+                    }, headers={"x-api-key": "dummy-client-key"})
+                    assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        assert captured["authorization"] == "Bearer tok-9"
+        assert captured["x_api_key"] is None
+        assert "oauth-2025-04-20" in captured["beta"]
+        assert captured["version"] == "2023-06-01"
+        assert captured["body"]["model"] == "claude-sonnet-4-5"
+
+    def test_401_forces_refresh_and_retries_once(self, monkeypatch):
+        """A 401 triggers one forced token refresh (rotating the store) and a
+        retry with the new access token."""
+        from awerouter import claude
+        calls = []
+
+        async def t():
+            async def up(request):
+                calls.append(request.headers.get("authorization"))
+                if len(calls) == 1:
+                    return web.json_response(
+                        {"error": {"message": "invalid token"}}, status=401)
+                return web.json_response({"model": "ok"})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                self._login("tok-1", "rt-1")
+                monkeypatch.setattr(claude, "_token_request", lambda p: {
+                    "access_token": "tok-2", "refresh_token": "rt-2", "expires_in": 3600})
+                async with TestClient(TestServer(self._app(up_server.port))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "auto",
+                        "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        assert calls == ["Bearer tok-1", "Bearer tok-2"]
+        on_disk = json.loads((self.dir / "claude-auth.json").read_text(encoding="utf-8"))
+        assert on_disk["refresh_token"] == "rt-2"  # rotation persisted
+        from awerouter.logging import tail
+        assert tail(1)[0].codex_retried is True  # 401-retry marker in usage log
+
+    def test_second_401_falls_back_to_keyed_pro(self, capsys, monkeypatch):
+        """A 401 that survives the refresh means the login is dead: flash
+        falls back to a keyed pro (loudly) instead of passing the 401."""
+        from awerouter import claude
+        calls = []
+
+        async def t():
+            async def up(request):
+                calls.append(request.headers.get("authorization"))
+                beta = request.headers.get("anthropic-beta") or ""
+                if "oauth-2025-04-20" in beta:  # claude login request
+                    return web.json_response(
+                        {"error": {"message": "invalid token"}}, status=401)
+                return web.json_response({"model": "pro-ok"})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                self._login("tok-stale")
+                monkeypatch.setattr(claude, "_token_request", lambda p: {
+                    "access_token": "tok-dead", "refresh_token": "rt-2", "expires_in": 3600})
+                async with TestClient(TestServer(self._app(up_server.port, pro="deepseek"))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "auto",
+                        "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+                    assert (await r.json())["model"] == "pro-ok"
+            finally:
+                await up_server.close()
+        run(t())
+        assert len(calls) == 3  # claude 401, refreshed retry 401, keyed pro 200
+        assert "falls back to pro" in capsys.readouterr().out
+
+    def test_second_401_surfaces_to_client(self, monkeypatch):
+        """Both destinations ride the same claude login: a fallback would just
+        retry the dead login, so the 401 surfaces after the one refresh."""
+        from awerouter import claude
+        calls = []
+
+        async def t():
+            async def up(request):
+                calls.append(1)
+                return web.json_response(
+                    {"error": {"message": "invalid token"}}, status=401)
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                self._login("tok-stale")
+                monkeypatch.setattr(claude, "_token_request", lambda p: {
+                    "access_token": "tok-dead", "refresh_token": "rt-2", "expires_in": 3600})
+                async with TestClient(TestServer(self._app(up_server.port))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "auto",
+                        "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 401
+            finally:
+                await up_server.close()
+        run(t())
+        assert len(calls) == 2  # one retry, then the 401 passes through
+
+    def test_missing_login_503_with_hint(self):
+        async def t():
+            async with TestClient(TestServer(self._app(0))) as c:
+                r = await c.post("/v1/messages", json={
+                    "model": "auto",
+                    "messages": [{"content": "hi"}],
+                })
+                assert r.status == 503
+                d = await r.json()
+                assert "awerouter login claude" in d["error"]["message"]
+        run(t())
+
+    def test_serve_warning_without_login(self):
+        providers = {"claude": Provider("claude", "https://api.anthropic.com", "claude")}
+        w = _claude_login_warning(providers)
+        assert w is not None and "awerouter login claude" in w
+
+    def test_serve_warning_with_invalid_login(self):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        (self.dir / "claude-auth.json").write_text("{}", encoding="utf-8")
+        providers = {"claude": Provider("claude", "https://api.anthropic.com", "claude")}
+        w = _claude_login_warning(providers)
+        assert w is not None and "awerouter login claude" in w
+
+    def test_no_serve_warning_with_login(self):
+        self._login()
+        providers = {"claude": Provider("claude", "https://api.anthropic.com", "claude")}
+        assert _claude_login_warning(providers) is None
+
+    def test_no_serve_warning_with_stale_login(self):
+        """A stale token is fine — it refreshes on the first request, so serve
+        start must not warn (and must not touch the network)."""
+        import time as _time
+        self._login(expires_at=_time.time() - 60)
+        providers = {"claude": Provider("claude", "https://api.anthropic.com", "claude")}
+        assert _claude_login_warning(providers) is None
 
 
 class TestAgentFromUA:

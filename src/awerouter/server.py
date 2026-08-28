@@ -22,7 +22,14 @@ from aiohttp import web
 
 from awerouter import __version__
 from awerouter import rtk
-from awerouter.codex import AUTH_SENTINEL, CodexAuthError, apply_codex_auth, auth_json_path
+from awerouter.claude import (
+    AUTH_SENTINEL as CLAUDE_SENTINEL,
+    ClaudeAuthError,
+    apply_claude_auth,
+    claude_auth_path,
+    login_status,
+)
+from awerouter.codex import AUTH_SENTINEL, CodexAuthError, apply_codex_auth, load_codex_login
 from awerouter.config import die, expand_value, is_loopback_url
 from awerouter.logging import append, auto_threshold, ensure_log_dir
 from awerouter.protocols import ENDPOINT_PATHS, extract
@@ -61,18 +68,22 @@ def _filter_headers(headers: dict) -> dict:
     """Keep only pass-through headers, drop hop-by-hop and auth."""
     out = {}
     for k, v in headers.items():
-        if k.lower() in _PASS_THROUGH:
-            out[k] = v
+        name = k.lower()
+        if name in _PASS_THROUGH:
+            out[name] = v
     return out
 
 
-def _set_auth(headers: dict, provider, env: dict | None = None) -> None:
+async def _set_auth(headers: dict, provider, env: dict | None = None,
+                    force_claude_refresh: bool = False) -> None:
     """Replace any incoming auth header with the destination provider's creds.
 
     No-auth providers (local model servers) send no auth header at all — the
     client's incoming key is dropped, not forwarded. Authorization header
     auto-prefixes 'Bearer ' if the value lacks it. The 'codex' sentinel loads
-    the local Codex CLI login and writes the ChatGPT account header set.
+    the local Codex CLI login and writes the ChatGPT account header set; the
+    'claude' sentinel loads the awerouter-owned OAuth login (off the event
+    loop — a stale token refreshes over the network here).
     """
     headers.pop("authorization", None)
     headers.pop("x-api-key", None)
@@ -80,6 +91,9 @@ def _set_auth(headers: dict, provider, env: dict | None = None) -> None:
         return
     if provider.auth == AUTH_SENTINEL:
         apply_codex_auth(headers)
+        return
+    if provider.auth == CLAUDE_SENTINEL:
+        await asyncio.to_thread(apply_claude_auth, headers, force_claude_refresh)
         return
     auth_value = expand_value(provider.auth, env)
     if provider.auth_header == "authorization" and not auth_value.lower().startswith("bearer "):
@@ -120,10 +134,11 @@ def _agent_from_ua(ua: str) -> str:
 
 
 def _codex_proxy(base_url: str) -> "str | None":
-    """chatgpt.com commonly needs the shell proxy to be reachable; honor the
-    same env vars codex CLI and awewarm honor (https_proxy/all_proxy, system
-    settings on macOS). Loopback targets never take the proxy (local relays);
-    other providers stay direct, exactly as before."""
+    """Subscription-login backends (chatgpt.com, api.anthropic.com) commonly
+    need the shell proxy to be reachable; honor the same env vars the codex
+    and claude CLIs honor (https_proxy/all_proxy, system settings on macOS).
+    Loopback targets never take the proxy (local relays); other providers
+    stay direct, exactly as before."""
     if is_loopback_url(base_url):
         return None
     proxies = urllib.request.getproxies()
@@ -168,6 +183,7 @@ async def _proxy_request(
     headers: dict,
     path: str,
     timeout: aiohttp.ClientTimeout,
+    force_claude_refresh: bool = False,
 ) -> aiohttp.ClientResponse:
     """Fire one upstream request. Raises on network/timeout errors."""
     provider = providers[dest.provider_name]
@@ -188,15 +204,16 @@ async def _proxy_request(
             body["stream"] = True
 
     # Auth
-    _set_auth(headers, provider, os.environ)
+    await _set_auth(headers, provider, os.environ, force_claude_refresh)
 
+    sub_auth = provider.auth in (AUTH_SENTINEL, CLAUDE_SENTINEL)
     return await session.post(
         upstream_url,
         json=body,
         headers=headers,
         timeout=timeout,
         allow_redirects=False,
-        proxy=_codex_proxy(provider.base_url) if provider.auth == AUTH_SENTINEL else None,
+        proxy=_codex_proxy(provider.base_url) if sub_auth else None,
     )
 
 
@@ -234,7 +251,8 @@ class _RoutingState:
         self.result = _resolve_for_request(body, profile, settings)
         self.attempt = 0
         self.streaming_started = False
-        self.codex_retried = False
+        self.codex_retried = False          # 401 auth retry happened (codex re-read / claude refresh)
+        self.claude_force_refresh = False   # next upstream call forces a claude token refresh
         self.codex_stream_fix = False
 
 
@@ -324,10 +342,11 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
 
         try:
             up = await _proxy_request(
-                session, state.body, dest, providers, dict(headers), path, timeout
+                session, state.body, dest, providers, dict(headers), path, timeout,
+                state.claude_force_refresh,
             )
-        except CodexAuthError as exc:
-            # Local login missing/invalid — retrying can't help; tell the user.
+        except (CodexAuthError, ClaudeAuthError) as exc:
+            # Login missing/invalid — retrying can't help; tell the user.
             _log_failure(state, request_id, t0, 503)
             raise web.HTTPServiceUnavailable(
                 text=json.dumps({"error": {"message": str(exc)}}),
@@ -355,25 +374,28 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
 
         # A codex-account 401 usually means the login file changed under us
         # (the local CLI refreshed it): re-read auth.json and retry the same
-        # destination once before surfacing the 401 to the client.
-        if (status == 401 and providers[dest.provider_name].auth == AUTH_SENTINEL
-                and not state.codex_retried):
+        # destination once before surfacing the 401 to the client. A
+        # claude-account 401 gets the same one-shot retry with a forced token
+        # refresh (stale clock, token rotated by another process).
+        auth = providers[dest.provider_name].auth
+        if status == 401 and not state.codex_retried and auth in (AUTH_SENTINEL, CLAUDE_SENTINEL):
             up.close()
             state.codex_retried = True
-            state.attempt -= 1  # login re-read, not a fallback attempt
+            state.claude_force_refresh = auth == CLAUDE_SENTINEL
+            state.attempt -= 1  # login retry, not a fallback attempt
             continue
 
         # Second 401: the login itself is rejected (dead account token, not a
-        # mid-flight refresh). When flash rides the codex login and pro has its
-        # own key, the same flash→pro rescue as transient failures keeps the
-        # request alive — one printed line per fallback, so a dead login is
-        # loud instead of silently burning paid pro. Pro on the same codex
+        # mid-flight refresh). When flash rides a subscription login and pro
+        # has its own key, the same flash→pro rescue as transient failures
+        # keeps the request alive — one printed line per fallback, so a dead
+        # login is loud instead of silently burning paid pro. Pro on the same
         # login can't help; the 401 surfaces as before.
-        if (status == 401 and providers[dest.provider_name].auth == AUTH_SENTINEL
+        if (status == 401 and auth in (AUTH_SENTINEL, CLAUDE_SENTINEL)
                 and dest_key == "flash" and state.attempt == 1
-                and providers[state.profile.destinations["pro"].provider_name].auth != AUTH_SENTINEL):
+                and providers[state.profile.destinations["pro"].provider_name].auth != auth):
             up.close()
-            print(f"  codex 401 -> login rejected after re-read; {request_id} falls back to pro")
+            print(f"  {auth} 401 -> login rejected after retry; {request_id} falls back to pro")
             state.result = _fallback_result(state)
             continue
 
@@ -385,6 +407,20 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
             up.close()
             byte_count = len(raw)
             ms = int((time.monotonic() - t0) * 1000)
+            obj = _codex_sse_response(raw)
+            if obj is None:
+                response_body = {
+                    "error": {
+                        "message": "codex upstream stream ended without a completed response",
+                    },
+                }
+                response_status = 502
+            elif obj.get("error"):
+                response_body = obj
+                response_status = 500
+            else:
+                response_body = obj
+                response_status = 200
             ensure_log_dir()
             append(RequestLog(
                 ts=_now_iso(),
@@ -394,7 +430,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
                 destination=dest_key,
                 provider=dest.provider_name,
                 model_out=dest.model,
-                status=status,
+                status=response_status,
                 ms=ms,
                 duration_ms=int((time.monotonic() - t0) * 1000),
                 bytes=byte_count,
@@ -407,14 +443,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
                 agent=state.agent,
                 codex_retried=state.codex_retried,
             ))
-            obj = _codex_sse_response(raw)
-            if obj is None:
-                return web.json_response(
-                    {"error": {"message": "codex upstream stream ended without a completed response"}},
-                    status=502)
-            if obj.get("error"):
-                return web.json_response(obj, status=500)
-            return web.json_response(obj)
+            return web.json_response(response_body, status=response_status)
 
         # Success path or non-fallbackable error — stream back
         ms = int((time.monotonic() - t0) * 1000)
@@ -526,7 +555,7 @@ async def handle_count_tokens(request: web.Request) -> web.Response:
 
     upstream_url = provider.base_url.rstrip("/") + request.path
     body["model"] = dest.model
-    _set_auth(headers, provider, os.environ)
+    await _set_auth(headers, provider, os.environ)
 
     try:
         async with session.post(
@@ -702,17 +731,44 @@ def _noauth_warning(providers: dict) -> "str | None":
 
 
 def _codex_login_warning(providers: dict) -> "str | None":
-    """Codex-login providers with no local login yet — every request to them
-    503s with a 'codex login' hint until the CLI logs in."""
+    """Warn when configured Codex providers cannot load the local login."""
     offenders = sorted(
         p.name for p in providers.values()
-        if p.auth == AUTH_SENTINEL and not auth_json_path().exists()
+        if p.auth == AUTH_SENTINEL
     )
     if not offenders:
         return None
+    try:
+        load_codex_login()
+    except CodexAuthError as exc:
+        return (
+            "warning: invalid codex login for providers: " + ", ".join(offenders) + "\n"
+            f"  ({exc})"
+        )
+    return None
+
+
+def _claude_login_warning(providers: dict) -> "str | None":
+    """Claude-login providers with no usable stored login — every request to
+    them 503s with an 'awerouter login claude' hint until the login exists.
+    Store check only: a present-but-stale token is fine (it refreshes on the
+    first request), so this never touches the network."""
+    offenders = sorted(
+        p.name for p in providers.values()
+        if p.auth == CLAUDE_SENTINEL
+    )
+    if not offenders:
+        return None
+    if claude_auth_path().exists():
+        if login_status() is not None:
+            return None
+        return (
+            "warning: invalid claude login for providers: " + ", ".join(offenders) + "\n"
+            f"  ({claude_auth_path()} — re-run: awerouter login claude)"
+        )
     return (
-        "warning: no codex login for providers: " + ", ".join(offenders) + "\n"
-        f"  ({auth_json_path()} — run: codex login)"
+        "warning: no claude login for providers: " + ", ".join(offenders) + "\n"
+        f"  ({claude_auth_path()} — run: awerouter login claude)"
     )
 
 
@@ -793,6 +849,10 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
         print()
         print(warning)
     warning = _codex_login_warning(providers)
+    if warning:
+        print()
+        print(warning)
+    warning = _claude_login_warning(providers)
     if warning:
         print()
         print(warning)
