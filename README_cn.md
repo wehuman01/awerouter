@@ -393,7 +393,7 @@ L4 是后果检查点，不是难度猜测。结构信号看不到*决定*编辑
 - **请求级逃生口：** 发送 `X-Awerouter-Token-Saver: off` 可让单个请求不压缩转发（排障、需要完整 diff/日志时用）。
 - 压缩发生在路由之前，`/v1/messages/count_tokens` 同样压缩，因此 L3 决策和用量日志与实际计费一致。开启 RTK 后建议重跑 `usage calibrate`——按未压缩流量校准的阈值会过多地触发 pro（`"auto"` 在窗口期后自愈）。
 
-压缩算法设计源自 [rtk](https://github.com/rtk-ai/rtk)（Apache 2.0）及 9router 的 JS 移植版（MIT），本模块为 Python 从零重构版；请求日志会记录每个请求估算省下的 token。
+压缩算法设计源自 [rtk](https://github.com/rtk-ai/rtk)（Apache 2.0）及 [9router](https://github.com/decolua/9router) 的 JS 移植版（MIT），本模块为 Python 从零重构版；请求日志会记录每个请求估算省下的 token。
 
 ## 命令
 
