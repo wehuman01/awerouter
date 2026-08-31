@@ -451,7 +451,7 @@ pytest
 
 架构说明、配置语义和发布流程见 [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)。
 
-## 支持一下
+## 赞助与支持
 
 如果 awerouter 帮你省了钱，欢迎支持一下：
 
