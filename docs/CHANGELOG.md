@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.2
 
 Multimodal sidekicks and multi-protocol profiles: image routing and the fall-through default become settings, enabling a pro-first profile where a non-multimodal flagship (GLM 5.3) does all the work and a multimodal flash (StepFun step-3.7-flash) takes only image-bearing requests — the new `step-glm-mm` template. A profile's `protocol` now also accepts a list, so one serve instance can speak several wire protocols on a single port.
 
