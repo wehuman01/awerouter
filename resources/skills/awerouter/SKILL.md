@@ -104,7 +104,7 @@ Rules:
 
 Rules:
 - `settings` is optional. Tool-keyed rules live in `settings.toolRouting` (`webSearch`, `edit`); the legacy top-level `webSearchModel` still works. `imageModel` (default pro) re-aims the image guard; `defaultModel` (default flash) flips the fall-through. `longContextThreshold` is an integer or `"auto"` (calibrated from recent traffic per `settings.longContextAuto`).
-- Each profile needs `protocol`, `longContextThreshold`, and `destinations`.
+- Each profile needs `protocol`, `longContextThreshold`, and `destinations`. `protocol` accepts one id or a list (`["anthropic", "openai-chat"]`) — a list serves several wire protocols on one port (clients pick by endpoint path); every destination provider must exist in each served providers.json group.
 - Supported protocols: `anthropic`, `openai-chat`, `openai-responses`.
 - Optional `"rtk": true` enables RTK tool-result compression (default off): verbose tool output (git diff/status/log, grep, listings, build logs) is compressed before forwarding. Fail-open, deterministic; error results and short content pass through. Per-request opt-out header: `X-Awerouter-Token-Saver: off`. After enabling, re-run `awerouter usage calibrate` (thresholds tuned on uncompressed traffic over-trigger pro).
 
@@ -136,7 +136,7 @@ Run:
 awerouter init                    # 'default' template
 awerouter init step-glm           # key-only combo: flash=StepFun step_plan, pro=GLM coding plan
 awerouter init glm-codex          # flash=GLM coding plan, pro=ChatGPT subscription (auth: "codex")
-awerouter init step-glm-mm             # multimodal sidekick: pro=GLM glm-5.3 does everything, flash=StepFun step-3.7-flash takes images only
+awerouter init step-glm-mm        # multimodal sidekick, dual-protocol (anthropic+openai-chat on one port): pro=GLM glm-5.3 does everything, flash=StepFun step-3.7-flash takes images only
 ```
 
 Templates are `<name>.providers.json` + `<name>.routing.json` pairs; an unknown name fails with the list of available ones. This creates `providers.json` and `routing.json` if missing.

@@ -222,9 +222,9 @@ async def _proxy_request(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_for_request(body: dict, profile, settings) -> ResolveResult:
+def _resolve_for_request(body: dict, profile, settings, protocol: str) -> ResolveResult:
     """Shared routing decision for all message-shaped endpoints."""
-    feat = extract(profile.protocol, body)
+    feat = extract(protocol, body)
     tr = settings.tool_routing
     return resolve(
         body.get("model") or None,
@@ -244,13 +244,15 @@ def _resolve_for_request(body: dict, profile, settings) -> ResolveResult:
 class _RoutingState:
     """Mutable routing state shared across the retry loop."""
 
-    def __init__(self, profile, settings, body: dict, agent: str = "", rtk_saved: int = 0):
+    def __init__(self, profile, settings, body: dict, agent: str = "", rtk_saved: int = 0,
+                 protocol: str = ""):
         self.profile = profile
         self.body = body
         self.inbound_model = body.get("model") or ""
         self.agent = agent
         self.rtk_saved = rtk_saved
-        self.result = _resolve_for_request(body, profile, settings)
+        self.protocol = protocol
+        self.result = _resolve_for_request(body, profile, settings, protocol)
         self.attempt = 0
         self.streaming_started = False
         self.codex_retried = False          # 401 auth retry happened (codex re-read / claude refresh)
@@ -278,7 +280,7 @@ def _log_failure(state: _RoutingState, request_id: str, t0: float, status: int) 
         file_search_tokens=state.result.inspect.file_search_tokens,
         rtk_saved=state.rtk_saved,
         profile=state.profile.name,
-        protocol=state.profile.protocol,
+        protocol=state.protocol,
         agent=state.agent,
         codex_retried=state.codex_retried,
     ))
@@ -298,13 +300,13 @@ def _protocol_mismatch(request: web.Request, endpoint_protocol: str) -> web.HTTP
 
 async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.StreamResponse:
     """Generic same-protocol proxy flow: route, forward, retry, stream back, log."""
-    providers: dict = request.app["providers"]
     profile = request.app["profile"]
     settings = request.app["settings"]
     session: aiohttp.ClientSession = request.app["session"]
 
-    if profile.protocol != endpoint_protocol:
+    if endpoint_protocol not in profile.protocols:
         raise _protocol_mismatch(request, endpoint_protocol)
+    providers: dict = request.app["providers"][endpoint_protocol]
 
     t0 = time.monotonic()
     request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
@@ -325,13 +327,15 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
     # Runs once — retries and the flash→pro fallback reuse the same body.
     rtk_saved = 0
     if _rtk_enabled(request, profile):
-        stats = rtk.compress_body(body, profile.protocol)
+        stats = rtk.compress_body(body, endpoint_protocol)
         line = rtk.format_log(stats)
         if line:
             print(line)
         rtk_saved = stats.saved_tokens if stats else 0
 
-    state = _RoutingState(profile, settings, body, _agent_from_ua(request.headers.get("User-Agent", "")), rtk_saved)
+    state = _RoutingState(profile, settings, body,
+                          _agent_from_ua(request.headers.get("User-Agent", "")),
+                          rtk_saved, endpoint_protocol)
 
     while True:
         dest_key = state.result.destination
@@ -441,7 +445,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
                 file_search_tokens=state.result.inspect.file_search_tokens,
                 rtk_saved=state.rtk_saved,
                 profile=profile.name,
-                protocol=profile.protocol,
+                protocol=state.protocol,
                 agent=state.agent,
                 codex_retried=state.codex_retried,
             ))
@@ -502,7 +506,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
             file_search_tokens=state.result.inspect.file_search_tokens,
             rtk_saved=state.rtk_saved,
             profile=profile.name,
-            protocol=profile.protocol,
+            protocol=state.protocol,
             agent=state.agent,
             codex_retried=state.codex_retried,
         ))
@@ -534,13 +538,13 @@ def _fallback_result(state: _RoutingState) -> ResolveResult:
 
 
 async def handle_count_tokens(request: web.Request) -> web.Response:
-    providers: dict = request.app["providers"]
     profile = request.app["profile"]
     settings = request.app["settings"]
     session: aiohttp.ClientSession = request.app["session"]
 
-    if profile.protocol != "anthropic":
+    if "anthropic" not in profile.protocols:
         raise _protocol_mismatch(request, "anthropic")
+    providers: dict = request.app["providers"]["anthropic"]
 
     body = await request.json()
     headers = _filter_headers(dict(request.headers))
@@ -548,10 +552,10 @@ async def handle_count_tokens(request: web.Request) -> web.Response:
     # Same compression as /v1/messages: the client's context-window estimate
     # must match what actually gets sent upstream.
     if _rtk_enabled(request, profile):
-        rtk.compress_body(body, profile.protocol)
+        rtk.compress_body(body, "anthropic")
 
     # Resolve destination (same logic as messages)
-    result = _resolve_for_request(body, profile, settings)
+    result = _resolve_for_request(body, profile, settings, "anthropic")
     dest = profile.destinations[result.destination]
     provider = providers[dest.provider_name]
 
@@ -631,7 +635,16 @@ def _loopback_proxy_warning() -> "str | None":
     )
 
 
+def _flat_providers(providers_by_protocol: dict) -> dict:
+    """Flatten grouped providers for the serve-start warnings: one entry per
+    provider name (first group wins on name collisions — the warning names
+    providers, config show shows the per-group detail)."""
+    return {p.name: p for group in providers_by_protocol.values() for p in group.values()}
+
+
 def create_app(providers: dict, profile, settings) -> web.Application:
+    """providers is the profile's groups keyed by served protocol
+    ({protocol: {provider_name: Provider}}); each handler picks its own group."""
     app = web.Application()
     app["providers"] = providers
     app["profile"] = profile
@@ -690,6 +703,12 @@ def _client_hint(protocol: str, display_host: str, port: int, settings) -> str:
     # openai-chat serves non-codex OpenAI-compatible agents (opencode etc.);
     # codex itself needs an openai-responses profile — documented in README.
     return base
+
+
+def _client_hints(protocols, display_host: str, port: int, settings) -> str:
+    """One hint block per served protocol: a multi-protocol profile serves
+    every client style on the same port."""
+    return "\n\n".join(_client_hint(p, display_host, port, settings) for p in protocols)
 
 
 # How far past the default port an implicit serve scans before giving up.
@@ -840,7 +859,7 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
         print(f"  L3 threshold -> {profile.long_context_threshold}")
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     print()
-    print(_client_hint(profile.protocol, display_host, actual_port, settings))
+    print(_client_hints(profile.protocols, display_host, actual_port, settings))
     update_hint = cached_update_hint()
     if update_hint:
         print()
@@ -849,15 +868,16 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
     if warning:
         print()
         print(warning)
-    warning = _noauth_warning(providers)
+    flat = _flat_providers(providers)
+    warning = _noauth_warning(flat)
     if warning:
         print()
         print(warning)
-    warning = _codex_login_warning(providers)
+    warning = _codex_login_warning(flat)
     if warning:
         print()
         print(warning)
-    warning = _claude_login_warning(providers)
+    warning = _claude_login_warning(flat)
     if warning:
         print()
         print(warning)

@@ -165,7 +165,7 @@ Three protocols are supported. `base_url` uses each native client's convention �
 | `openai-chat`       | `OPENAI_BASE_URL` (includes version segment) | `base_url + /chat/completions` |
 | `openai-responses`  | `OPENAI_BASE_URL` (includes version segment) | `base_url + /responses` |
 
-The same provider often uses a different path per protocol — GLM for instance: `https://open.bigmodel.cn/api/coding/paas/v4` for chat completions but `https://open.bigmodel.cn/api/v1` for responses. That's why each protocol group carries its own `base_url`.
+The same provider often uses a different path per protocol — GLM for instance: `https://open.bigmodel.cn/api/anthropic` for Claude-protocol clients but `https://open.bigmodel.cn/api/coding/paas/v4` for chat completions and `https://open.bigmodel.cn/api/v1` for responses. That's why each protocol group carries its own `base_url` — and why a multi-protocol profile lists the provider in each group it serves.
 
 The auth header is **auto-detected from `base_url`**: `anthropic.com` → `x-api-key` (bare token); everyone else → `Authorization` (auto-prefixes `Bearer `). No `auth_header` field needed unless the heuristic is wrong.
 
@@ -315,9 +315,13 @@ awerouter init step-glm      # needs STEPFUN_AUTH_TOKEN and GLM_API_KEY
 awerouter init glm-codex     # needs GLM_API_KEY, plus a ChatGPT subscription via codex login
 ```
 
-**step-glm-mm** — the multimodal sidekick, no smart split: a non-multimodal flagship (GLM 5.3 on the coding plan) does all the work, and only image-bearing requests go to a multimodal flash (StepFun step-3.7-flash). Same providers as step-glm; the settings do the inverting:
+**step-glm-mm** — the multimodal sidekick, no smart split: a non-multimodal flagship (GLM 5.3 on the coding plan) does all the work, and only image-bearing requests go to a multimodal flash (StepFun step-3.7-flash). Same vendors as step-glm; the settings do the inverting. Dual-protocol (`["anthropic", "openai-chat"]`): one serve instance takes Claude Code *and* openai-chat agents on the same port — each protocol rides its own provider entry:
 
 ```json
+"anthropic": {
+  "stepfun": { "base_url": "https://api.stepfun.com/step_plan",      "auth": "${STEPFUN_AUTH_TOKEN}" },
+  "glm":     { "base_url": "https://open.bigmodel.cn/api/anthropic", "auth": "${GLM_API_KEY}" }
+},
 "openai-chat": {
   "stepfun": { "base_url": "https://api.stepfun.com/step_plan/v1",        "auth": "${STEPFUN_AUTH_TOKEN}" },
   "glm":     { "base_url": "https://open.bigmodel.cn/api/coding/paas/v4", "auth": "${GLM_API_KEY}" }
@@ -332,17 +336,22 @@ awerouter init glm-codex     # needs GLM_API_KEY, plus a ChatGPT subscription vi
 ```
 
 ```json
-"destinations": {
-  "flash": "stepfun,step-3.7-flash",
-  "pro":   "glm,glm-5.3"
+"cc-router-1": {
+  "protocol": ["anthropic", "openai-chat"],
+  "destinations": {
+    "flash": "stepfun,step-3.7-flash",
+    "pro":   "glm,glm-5.3"
+  }
 }
 ```
 
 ```bash
 awerouter init step-glm-mm        # needs STEPFUN_AUTH_TOKEN and GLM_API_KEY
+# Claude Code:    export ANTHROPIC_BASE_URL=http://127.0.0.1:20128        (no /v1)
+# openai-chat:    export OPENAI_BASE_URL=http://127.0.0.1:20128/v1       (with /v1)
 ```
 
-`imageModel: flash` moves the image guard to the multimodal model (it outranks tier labels and long context — a request pro cannot see must never reach pro); `defaultModel: pro` flips the cost-first fall-through, so everything text goes to the flagship. Background-tier tasks still ride flash. Prefer a single vendor? Point flash at GLM's own multimodal `glm-5.3-flash` (`https://open.bigmodel.cn/api/v1`) instead of StepFun — one line in each file.
+`imageModel: flash` moves the image guard to the multimodal model (it outranks tier labels and long context — a request pro cannot see must never reach pro); `defaultModel: pro` flips the cost-first fall-through, so everything text goes to the flagship. Background-tier tasks still ride flash. Prefer a single vendor? Point flash at GLM's own multimodal `glm-5.3-flash` (`https://open.bigmodel.cn/api/v1`) instead of StepFun — one line in each protocol group.
 
 Backend model names drift (see the Codex account section) — renaming is a one-line change in routing.json.
 
@@ -382,7 +391,7 @@ Backend model names drift (see the Codex account section) — renaming is a one-
 
 Keys reference `${ENV_VAR}` syntax. Missing env vars die with a clear message at startup.
 
-> **Profile-based routing:** `routing.json` groups configs under profile ids (like aweswitch). `awerouter serve <profile>` starts one; with a single profile it auto-selects. `protocol` maps the profile to a providers.json group and decides which endpoint it serves — the serve banner prints the matching client env (`ANTHROPIC_BASE_URL` for Claude Code, `OPENAI_BASE_URL` / Codex `wire_api` for the openai protocols). Note: openai clients are single-model, so L2 tier labels effectively never fire for them — openai traffic routes by L1 + L3 with a flash default.
+> **Profile-based routing:** `routing.json` groups configs under profile ids (like aweswitch). `awerouter serve <profile>` starts one; with a single profile it auto-selects. `protocol` maps the profile to a providers.json group and decides which endpoint it serves — the serve banner prints the matching client env (`ANTHROPIC_BASE_URL` for Claude Code, `OPENAI_BASE_URL` / Codex `wire_api` for the openai protocols). It accepts a single id or a list: `"protocol": ["anthropic", "openai-chat"]` serves both wire protocols on one port — clients pick by endpoint path (`/v1/messages` vs `/v1/chat/completions`), each protocol forwards through its own provider group, and every destination provider must exist in each served group (per-protocol `base_url`s). Note: openai clients are single-model, so L2 tier labels effectively never fire for them — openai traffic routes by L1 + L3 with a flash default.
 
 > **Ports:** the optional `port` field pins a profile's listen port (`awerouter list` shows it); precedence: `--port` flag > profile `port` > 20128 default. An explicitly chosen port that is already in use fails loudly — clients hardcode it, it must not silently move. Without one, serve takes the first free port scanning up from 20128: the first instance gets 20128, the next 20129, and so on — the assignment follows start order, not the profile. For the one-instance-at-a-time swap workflow, leave profiles portless and point clients at 20128.
 

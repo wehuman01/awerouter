@@ -69,12 +69,25 @@ class Settings:
 @dataclass
 class RoutingProfile:
     name: str                       # profile id, e.g. "cc-router-1"
-    protocol: str                   # maps to a providers.json group: anthropic / openai-chat / openai-responses
+    # Maps to providers.json groups: anthropic / openai-chat / openai-responses.
+    # A list serves several protocols on one port — clients pick by endpoint
+    # path (/v1/messages vs /v1/chat/completions vs /v1/responses); every
+    # destination provider must exist in each served group.
+    protocols: "str | list[str] | tuple[str, ...]"
     long_context_threshold: int     # when threshold_auto: fallback until serve start resolves it
     destinations: dict[str, Destination]
     port: Optional[int] = None      # fixed listen port; --port overrides, else default 20128
     threshold_auto: bool = False    # longContextThreshold was "auto"; resolved at serve start
     rtk: bool = False               # compress tool_result content before routing (opt-in)
+
+    def __post_init__(self):
+        # Accept a bare string everywhere a list works ("anthropic" == ["anthropic"]).
+        self.protocols = (self.protocols,) if isinstance(self.protocols, str) else tuple(self.protocols)
+
+    @property
+    def protocol(self) -> str:
+        """Display form: protocol ids joined with '+' ("anthropic+openai-chat")."""
+        return "+".join(self.protocols)
 
 
 @dataclass

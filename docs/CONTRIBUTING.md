@@ -73,7 +73,7 @@ Key design decisions:
 Two files in `~/.config/awerouter/` (override with `AWEROUTER_CONFIG_DIR`):
 
 - `providers.json` — `{protocol: {provider: {base_url, auth?, auth_header?}}}`. Secrets use `${VAR}` references; missing env vars die at request time with an actionable message. `auth` is optional — omitted means a no-auth upstream (local model servers; requests go out with no auth header). `auth_header` is auto-detected from the base_url netloc (`anthropic.com` → `x-api-key`, else `Authorization` with auto-prefixed `Bearer `).
-- `routing.json` — optional `settings` (`backgroundModel`, `thinkModel`, `toolRouting` with `webSearch`/`edit`; legacy `webSearchModel` still works, `imageModel`/`defaultModel` destination keys, `longContextAuto`) plus profile entries `{protocol, port?, longContextThreshold, rtk?, destinations: {flash, pro}}` where a destination is `"provider,model"` and `longContextThreshold` is an integer or `"auto"`.
+- `routing.json` — optional `settings` (`backgroundModel`, `thinkModel`, `toolRouting` with `webSearch`/`edit`; legacy `webSearchModel` still works, `imageModel`/`defaultModel` destination keys, `longContextAuto`) plus profile entries `{protocol (id or list — a list serves several wire protocols on one port), port?, longContextThreshold, rtk?, destinations: {flash, pro}}` where a destination is `"provider,model"` and `longContextThreshold` is an integer or `"auto"`.
 
 Rules:
 

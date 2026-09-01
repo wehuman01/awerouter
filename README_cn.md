@@ -165,7 +165,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 | `openai-chat` | `OPENAI_BASE_URL` 风格（含版本段） | `base_url + /chat/completions` |
 | `openai-responses` | `OPENAI_BASE_URL` 风格（含版本段） | `base_url + /responses` |
 
-同一家 provider 的两个协议路径往往不同——比如 GLM：chat completions 是 `https://open.bigmodel.cn/api/coding/paas/v4`，responses 是 `https://open.bigmodel.cn/api/v1`。所以每个协议分组各配各的 `base_url`。
+同一家 provider 的两个协议路径往往不同——比如 GLM：Claude 协议客户端用 `https://open.bigmodel.cn/api/anthropic`，chat completions 是 `https://open.bigmodel.cn/api/coding/paas/v4`，responses 是 `https://open.bigmodel.cn/api/v1`。所以每个协议分组各配各的 `base_url`——这也是多协议 profile 要在每个被服务的分组里都列一份 provider 的原因。
 
 鉴权头**根据 `base_url` 自动判断**：`anthropic.com` → `x-api-key`（裸 token）；其他 → `Authorization`（自动补 `Bearer `）。除非启发式判断错了，否则不需要填 `auth_header`。
 
@@ -315,9 +315,13 @@ awerouter init step-glm      # 需要设置 STEPFUN_AUTH_TOKEN 和 GLM_API_KEY
 awerouter init glm-codex     # 需要 GLM_API_KEY，且 codex login 登录过 ChatGPT 订阅
 ```
 
-**step-glm-mm** —— 多模态侧翼，不做智能分流：非多模态旗舰（GLM coding plan 的 glm-5.3）包揽全部主要工作，只有带图的请求交给多模态 flash（StepFun step-3.7-flash）。providers 与 step-glm 相同，反转全靠 settings：
+**step-glm-mm** —— 多模态侧翼，不做智能分流：非多模态旗舰（GLM coding plan 的 glm-5.3）包揽全部主要工作，只有带图的请求交给多模态 flash（StepFun step-3.7-flash）。厂商与 step-glm 相同，反转全靠 settings。双协议（`["anthropic", "openai-chat"]`）：一个 serve 实例在同一端口同时接 Claude Code *和* openai-chat 系 agent——每种协议走自己的 provider 条目：
 
 ```json
+"anthropic": {
+  "stepfun": { "base_url": "https://api.stepfun.com/step_plan",      "auth": "${STEPFUN_AUTH_TOKEN}" },
+  "glm":     { "base_url": "https://open.bigmodel.cn/api/anthropic", "auth": "${GLM_API_KEY}" }
+},
 "openai-chat": {
   "stepfun": { "base_url": "https://api.stepfun.com/step_plan/v1",        "auth": "${STEPFUN_AUTH_TOKEN}" },
   "glm":     { "base_url": "https://open.bigmodel.cn/api/coding/paas/v4", "auth": "${GLM_API_KEY}" }
@@ -332,17 +336,22 @@ awerouter init glm-codex     # 需要 GLM_API_KEY，且 codex login 登录过 Ch
 ```
 
 ```json
-"destinations": {
-  "flash": "stepfun,step-3.7-flash",
-  "pro":   "glm,glm-5.3"
+"cc-router-1": {
+  "protocol": ["anthropic", "openai-chat"],
+  "destinations": {
+    "flash": "stepfun,step-3.7-flash",
+    "pro":   "glm,glm-5.3"
+  }
 }
 ```
 
 ```bash
 awerouter init step-glm-mm        # 需要设置 STEPFUN_AUTH_TOKEN 和 GLM_API_KEY
+# Claude Code:    export ANTHROPIC_BASE_URL=http://127.0.0.1:20128        （不带 /v1）
+# openai-chat:    export OPENAI_BASE_URL=http://127.0.0.1:20128/v1       （带 /v1）
 ```
 
-`imageModel: flash` 把图片护栏改指多模态模型（它的优先级高于档位标签和长文本——pro 看不了的图绝不能送到 pro）；`defaultModel: pro` 翻转了默认兜底（原本 cost-first 落 flash），于是所有纯文本请求都走旗舰。后台档任务仍走 flash。想只用一家？把 flash 改成 GLM 自家的多模态 `glm-5.3-flash`（`https://open.bigmodel.cn/api/v1`）——两个文件各改一行。
+`imageModel: flash` 把图片护栏改指多模态模型（它的优先级高于档位标签和长文本——pro 看不了的图绝不能送到 pro）；`defaultModel: pro` 翻转了默认兜底（原本 cost-first 落 flash），于是所有纯文本请求都走旗舰。后台档任务仍走 flash。想只用一家？把 flash 改成 GLM 自家的多模态 `glm-5.3-flash`（`https://open.bigmodel.cn/api/v1`）——每个协议组各改一行。
 
 后端模型名会漂移（见「Codex 账号」一节）——改名只需动 routing.json 一行。
 
@@ -382,7 +391,7 @@ awerouter init step-glm-mm        # 需要设置 STEPFUN_AUTH_TOKEN 和 GLM_API_
 
 密钥用 `${ENV_VAR}` 引用。缺失的环境变量在启动时报错退出。
 
-> **基于 profile 的路由：** `routing.json` 用 profile id 分组（类似 aweswitch）。`awerouter serve <profile>` 启动其中一个；只有一个 profile 时自动选择。`protocol` 字段把 profile 映射到 providers.json 的分组，并决定它服务哪个端点——serve 横幅按协议打印对应客户端的环境变量（anthropic → Claude Code 的 `ANTHROPIC_BASE_URL`；openai 协议 → `OPENAI_BASE_URL` / Codex `wire_api`）。注意：openai 客户端是单 model 配置，L2 档位匹配基本不触发——openai 流量走 L1 + L3，默认 flash。
+> **基于 profile 的路由：** `routing.json` 用 profile id 分组（类似 aweswitch）。`awerouter serve <profile>` 启动其中一个；只有一个 profile 时自动选择。`protocol` 字段把 profile 映射到 providers.json 的分组，并决定它服务哪个端点——serve 横幅按协议打印对应客户端的环境变量（anthropic → Claude Code 的 `ANTHROPIC_BASE_URL`；openai 协议 → `OPENAI_BASE_URL` / Codex `wire_api`）。它可以写单个 id，也可以写列表：`"protocol": ["anthropic", "openai-chat"]` 让一个端口同时服务两种线协议——客户端按端点路径自选（`/v1/messages` 还是 `/v1/chat/completions`），每种协议走自己的 provider 组，且每个 destination provider 必须在每个被服务分组里都存在（各自协议的 `base_url`）。注意：openai 客户端是单 model 配置，L2 档位匹配基本不触发——openai 流量走 L1 + L3，默认 flash。
 
 > **端口分配：** 可选的 `port` 字段为 profile 固定监听端口（`awerouter list` 会显示）；优先级：`--port` 参数 > profile `port` > 默认 20128。显式指定的端口被占用时直接报错退出——客户端写死了它，不能悄悄漂移。不配置端口时，serve 从 20128 起向上找第一个空闲端口：第一个实例拿 20128，下一个 20129，依次顺延——按启动顺序分配，与 profile 无关。一次只跑一个实例的热切换用法：profile 不配端口、客户端固定指向 20128 即可。
 

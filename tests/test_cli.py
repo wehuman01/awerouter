@@ -134,18 +134,20 @@ class TestInit:
 
     def test_init_step_glm_mm_template(self, tmp_path, monkeypatch):
         """The multimodal-sidekick template parses end-to-end: imageModel
-        flash, defaultModel pro, stepfun flash next to glm pro."""
+        flash, defaultModel pro, dual-protocol (anthropic + openai-chat),
+        stepfun flash next to glm pro in both provider groups."""
         _setup(tmp_path, monkeypatch)
         r = CliRunner().invoke(cli, ["init", "step-glm-mm"])
         assert r.exit_code == 0
         routing = json.loads((tmp_path / "routing.json").read_text())
         assert routing["settings"] == {"imageModel": "flash", "defaultModel": "pro"}
+        assert routing["cc-router-1"]["protocol"] == ["anthropic", "openai-chat"]
         assert routing["cc-router-1"]["destinations"] == {
             "flash": "stepfun,step-3.7-flash", "pro": "glm,glm-5.3"}
         settings, profiles = load_routing()
         assert settings.image_model == "flash"
         assert settings.default_model == "pro"
-        assert profiles["cc-router-1"].protocol == "openai-chat"
+        assert profiles["cc-router-1"].protocols == ("anthropic", "openai-chat")
 
     def test_init_unknown_template(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch)

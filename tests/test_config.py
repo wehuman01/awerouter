@@ -541,6 +541,54 @@ class TestLoadRouting:
         with pytest.raises(SystemExit, match="unknown protocol"):
             load_routing()
 
+    def test_protocol_list_parses(self, tmp_path, monkeypatch):
+        """A protocol list serves several wire protocols on one port."""
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "cc-1": {"protocol": ["anthropic", "openai-chat"], "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        _, profiles = load_routing()
+        assert profiles["cc-1"].protocols == ("anthropic", "openai-chat")
+        assert profiles["cc-1"].protocol == "anthropic+openai-chat"
+
+    def test_protocol_string_normalizes_to_one_tuple(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        _, profiles = load_routing()
+        assert profiles["cc-1"].protocols == ("anthropic",)
+        assert profiles["cc-1"].protocol == "anthropic"
+
+    def test_protocol_list_duplicate_dies(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "cc-1": {"protocol": ["anthropic", "anthropic"], "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        with pytest.raises(SystemExit, match="more than once"):
+            load_routing()
+
+    def test_protocol_list_unknown_entry_dies(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "cc-1": {"protocol": ["anthropic", "nope"], "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        with pytest.raises(SystemExit, match="unknown protocol 'nope'"):
+            load_routing()
+
+    def test_protocol_empty_list_dies(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "cc-1": {"protocol": [], "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        with pytest.raises(SystemExit, match="'protocol' must be"):
+            load_routing()
+
     def test_profile_no_longer_needs_background_think(self, tmp_path, monkeypatch):
         """backgroundModel/thinkModel moved to settings — profile omits them."""
         monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
@@ -630,6 +678,36 @@ class TestLoadForProfile:
                      "destinations": {"flash": "p,m", "pro": "p,m"}},
         })
         with pytest.raises(SystemExit, match="protocol 'openai-chat'"):
+            load_for_profile("cc-1")
+
+    def test_multi_protocol_returns_grouped_providers(self, tmp_path, monkeypatch):
+        """load_for_profile hands back one provider group per served protocol."""
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {
+            "anthropic": {"p": {"base_url": "https://a", "auth": "${K}"}},
+            "openai-chat": {"p": {"base_url": "https://a/v1", "auth": "${K}"}},
+        }, {
+            "cc-1": {"protocol": ["anthropic", "openai-chat"], "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m1", "pro": "p,m2"}},
+        })
+        providers, profile, _ = load_for_profile("cc-1")
+        assert set(providers) == {"anthropic", "openai-chat"}
+        assert providers["anthropic"]["p"].base_url == "https://a"
+        assert providers["openai-chat"]["p"].base_url == "https://a/v1"
+        assert profile.protocols == ("anthropic", "openai-chat")
+
+    def test_multi_protocol_dest_missing_in_one_group_dies(self, tmp_path, monkeypatch):
+        """Every destination must resolve in every served group — a name present
+        in one protocol's group but absent in another's is a config error."""
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {
+            "anthropic": {"p": {"base_url": "https://a", "auth": "${K}"}, "q": {"base_url": "https://b", "auth": "${K}"}},
+            "openai-chat": {"p": {"base_url": "https://a/v1", "auth": "${K}"}},
+        }, {
+            "cc-1": {"protocol": ["anthropic", "openai-chat"], "longContextThreshold": 1,
+                     "destinations": {"flash": "q,m1", "pro": "p,m2"}},
+        })
+        with pytest.raises(SystemExit, match="'openai-chat' group"):
             load_for_profile("cc-1")
 
 

@@ -4,7 +4,7 @@
     "defaultModel": "pro"
   },
   "cc-router-1": {
-    "protocol": "openai-chat",
+    "protocol": ["anthropic", "openai-chat"],
     "longContextThreshold": 8000,
     "destinations": {
       "flash": "stepfun,step-3.7-flash",

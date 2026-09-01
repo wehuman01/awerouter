@@ -322,13 +322,24 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
                 "(claude → anthropic, codex → openai-responses); edit routing.json"
             )
         protocol = body.get("protocol")
-        if not protocol:
-            die(f"profile '{name}' missing required 'protocol' field")
-        if protocol not in PROTOCOL_IDS:
+        if isinstance(protocol, str):
+            protocols = [protocol]
+        elif (isinstance(protocol, list) and protocol
+              and all(isinstance(p, str) for p in protocol)):
+            protocols = protocol
+        else:
             die(
-                f"profile '{name}': unknown protocol '{protocol}'; "
-                f"expected one of: {', '.join(PROTOCOL_IDS)}"
+                f"profile '{name}': 'protocol' must be a protocol id or a non-empty "
+                f"list of them; expected one or more of: {', '.join(PROTOCOL_IDS)}"
             )
+        for p in protocols:
+            if p not in PROTOCOL_IDS:
+                die(
+                    f"profile '{name}': unknown protocol '{p}'; "
+                    f"expected one of: {', '.join(PROTOCOL_IDS)}"
+                )
+        if len(set(protocols)) != len(protocols):
+            die(f"profile '{name}': 'protocol' lists a protocol more than once")
         for key in ("longContextThreshold", "destinations"):
             if key not in body:
                 die(f"profile '{name}' missing required key: {key}")
@@ -365,7 +376,7 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
                     f"integer or \"auto\", got: {threshold}")
         profiles[name] = RoutingProfile(
             name=name,
-            protocol=str(protocol),
+            protocols=protocols,
             long_context_threshold=threshold,
             destinations=parsed,
             port=port_raw,
@@ -375,33 +386,36 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
     return settings, profiles
 
 
-def resolve_provider(name: str, providers: dict[str, Provider]) -> Provider:
-    if name not in providers:
-        avail = ", ".join(providers) or "(none)"
-        die(f"provider '{name}' not found in this profile's agent group; available: {avail}")
-    return providers[name]
-
-
 def validate_profiles(providers_all: dict, profiles: dict) -> None:
-    """Cross-check every profile's protocol and destinations against providers.json.
+    """Cross-check every profile's protocols and destinations against providers.json.
 
     Called by both serve and config show, so bad references fail at load time
-    instead of on the first request.
+    instead of on the first request. A multi-protocol profile must resolve its
+    destinations in every served group — each protocol carries its own
+    provider entries (per-protocol base_urls), so a name present in one group
+    but absent in another is a config error, not a runtime fallback.
     """
     for profile in profiles.values():
-        group = providers_all.get(profile.protocol)
-        if group is None:
-            avail = ", ".join(providers_all) or "(none)"
-            die(
-                f"protocol '{profile.protocol}' (for profile '{profile.name}') not found in "
-                f"providers.json; available: {avail}"
-            )
-        for tier, dest in profile.destinations.items():
-            resolve_provider(dest.provider_name, group)
+        for protocol in profile.protocols:
+            group = providers_all.get(protocol)
+            if group is None:
+                avail = ", ".join(providers_all) or "(none)"
+                die(
+                    f"protocol '{protocol}' (for profile '{profile.name}') not found in "
+                    f"providers.json; available: {avail}"
+                )
+            for tier, dest in profile.destinations.items():
+                if dest.provider_name not in group:
+                    avail = ", ".join(group) or "(none)"
+                    die(
+                        f"provider '{dest.provider_name}' (destination '{tier}' of profile "
+                        f"'{profile.name}') not found in the '{protocol}' group of "
+                        f"providers.json; available: {avail}"
+                    )
 
 
-def load_for_profile(name: str) -> tuple[dict[str, Provider], RoutingProfile, Settings]:
-    """Resolve one profile: returns (protocol providers, profile, settings)."""
+def load_for_profile(name: str) -> tuple[dict[str, dict[str, Provider]], RoutingProfile, Settings]:
+    """Resolve one profile: returns (providers by served protocol, profile, settings)."""
     providers_all = load_providers()
     settings, profiles = load_routing()
     if name not in profiles:
@@ -409,7 +423,7 @@ def load_for_profile(name: str) -> tuple[dict[str, Provider], RoutingProfile, Se
         die(f"profile '{name}' not found in routing.json; available: {avail}")
     profile = profiles[name]
     validate_profiles(providers_all, {name: profile})
-    return providers_all[profile.protocol], profile, settings
+    return {p: providers_all[p] for p in profile.protocols}, profile, settings
 
 
 def load_default_profile() -> tuple[dict[str, Provider], RoutingProfile, Settings]:
@@ -534,7 +548,8 @@ def format_routing_display(settings: Settings, profiles: dict[str, RoutingProfil
     }
     for name, p in profiles.items():
         entry = {
-            "protocol": p.protocol,
+            # mirrors the config shape: a bare id for one protocol, a list for several
+            "protocol": p.protocol if len(p.protocols) == 1 else list(p.protocols),
             "longContextThreshold": "auto" if p.threshold_auto else p.long_context_threshold,
         }
         if p.port is not None:
@@ -677,10 +692,12 @@ def config_show_cmd(profile):
         avail = ", ".join(profiles) or "(none)"
         die(f"profile '{profile}' not found in routing.json; available: {avail}")
     p = profiles[profile]
-    used = {d.provider_name: providers_all[p.protocol][d.provider_name]
-            for d in p.destinations.values()}
+    used = {}
+    for proto in p.protocols:
+        group = providers_all[proto]
+        used[proto] = {d.provider_name: group[d.provider_name] for d in p.destinations.values()}
     click.echo("providers:")
-    click.echo(format_providers_display({p.protocol: used}))
+    click.echo(format_providers_display(used))
     click.echo()
     click.echo("profile:")
     click.echo(format_routing_display(settings, {profile: p}))

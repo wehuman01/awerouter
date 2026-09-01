@@ -151,7 +151,7 @@ This creates config files in `~/.config/awerouter/` from a bundled template:
 - `providers.json`
 - `routing.json`
 
-Bundled templates are `<name>.providers.json` + `<name>.routing.json` pairs (`default`, `step-glm`, `glm-codex`, `step-glm-mm`; the README's "Common setup templates" section says what each combo routes where). An unknown name fails with the list of available templates. `step-glm-mm` is the multimodal sidekick: settings `imageModel: flash` + `defaultModel: pro` make a non-multimodal flagship (pro) do all the work while image-bearing requests go to the multimodal flash.
+Bundled templates are `<name>.providers.json` + `<name>.routing.json` pairs (`default`, `step-glm`, `glm-codex`, `step-glm-mm`; the README's "Common setup templates" section says what each combo routes where). An unknown name fails with the list of available templates. `step-glm-mm` is the multimodal sidekick: settings `imageModel: flash` + `defaultModel: pro` make a non-multimodal flagship (pro) do all the work while image-bearing requests go to the multimodal flash; its `protocol` is a list (`["anthropic", "openai-chat"]`), so one serve instance takes Claude Code and openai-chat clients on the same port.
 
 Override with `AWEROUTER_CONFIG_DIR` if needed.
 

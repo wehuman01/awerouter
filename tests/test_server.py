@@ -29,7 +29,7 @@ from awerouter.types import Destination, Provider, RoutingProfile, Settings
 
 ROUTING = RoutingProfile(
     name="test",
-    protocol="anthropic",
+    protocols="anthropic",
     long_context_threshold=32,
     destinations={
         "flash": Destination("stepfun", "step-3.5-flash"),
@@ -41,12 +41,16 @@ SETTINGS = Settings()  # defaults: background=flash, think=pro
 
 
 def _providers(port):
+    """Grouped by served protocol (the shape serve passes in): the same mock
+    upstream registered under every protocol, so any profile picks a group."""
     os.environ.setdefault("STEPFUN_KEY", "flash-key")
     os.environ.setdefault("ANTHROPIC_KEY", "pro-key")
-    return {
-        "stepfun": Provider("stepfun", f"http://127.0.0.1:{port}", "${STEPFUN_KEY}"),
-        "anthropic": Provider("anthropic", f"http://127.0.0.1:{port}", "${ANTHROPIC_KEY}", "x-api-key"),
-    }
+    def group():
+        return {
+            "stepfun": Provider("stepfun", f"http://127.0.0.1:{port}", "${STEPFUN_KEY}"),
+            "anthropic": Provider("anthropic", f"http://127.0.0.1:{port}", "${ANTHROPIC_KEY}", "x-api-key"),
+        }
+    return {p: group() for p in ("anthropic", "openai-chat", "openai-responses")}
 
 
 def run(coro):
@@ -276,7 +280,7 @@ class TestAwerouter:
             await up_server.start_server()
             try:
                 providers = _providers(up_server.port)
-                providers["stepfun"] = Provider(
+                providers["anthropic"]["stepfun"] = Provider(
                     "stepfun", f"http://127.0.0.1:{up_server.port}", None)
                 app = create_app(providers, ROUTING, SETTINGS)
                 async with TestClient(TestServer(app)) as c:
@@ -436,7 +440,7 @@ class TestAwerouter:
             s.close()
 
             providers = {
-                "dead": Provider("dead", f"http://127.0.0.1:{dead_port}", "k"),
+                "anthropic": {"dead": Provider("dead", f"http://127.0.0.1:{dead_port}", "k")},
             }
             profile = RoutingProfile("t", "anthropic", 32, {
                 "flash": Destination("dead", "m1"),
@@ -575,6 +579,82 @@ class TestOpenAIProtocols:
         run(t())
 
 
+class TestMultiProtocol:
+    """"protocol": ["anthropic", "openai-chat"] serves both wire protocols on
+    one port — clients pick by endpoint path; the log records which protocol
+    actually served the request."""
+
+    def _app(self):
+        profile = RoutingProfile("mm", ["anthropic", "openai-chat"], 32, {
+            "flash": Destination("stepfun", "sf-flash"),
+            "pro": Destination("anthropic", "opus-pro"),
+        })
+        return create_app(_providers(0), profile, SETTINGS)
+
+    def test_both_protocols_served_on_one_port(self):
+        async def t():
+            captured = []
+
+            async def up(request):
+                captured.append(request.path)
+                return web.json_response({"model": "x"})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            # flat base_url (no /v1) + the openai-chat endpoint path
+            up_app.router.add_post("/chat/completions", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                providers = _providers(up_server.port)
+                profile = RoutingProfile("mm", ["anthropic", "openai-chat"], 32, {
+                    "flash": Destination("stepfun", "sf-flash"),
+                    "pro": Destination("anthropic", "opus-pro"),
+                })
+                app = create_app(providers, profile, SETTINGS)
+                async with TestClient(TestServer(app)) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "think", "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+                    r2 = await c.post("/v1/chat/completions", json={
+                        "model": "auto", "messages": [{"role": "user", "content": "hi"}],
+                    })
+                    assert r2.status == 200
+                    # each protocol forwards along its own upstream path
+                    assert captured == ["/v1/messages", "/chat/completions"]
+            finally:
+                await up_server.close()
+        run(t())
+
+    def test_unserved_protocol_still_400s(self):
+        async def t():
+            app = self._app()
+            async with TestClient(TestServer(app)) as c:
+                r = await c.post("/v1/responses", json={
+                    "model": "auto", "input": "hi",
+                })
+                assert r.status == 400
+                d = await r.json()
+                assert "speaks 'anthropic+openai-chat'" in d["error"]["message"]
+        run(t())
+
+    def test_log_records_serving_protocol(self):
+        from awerouter.logging import tail
+        async def t():
+            app = self._app()
+            async with TestClient(TestServer(app)) as c:
+                await c.post("/v1/messages", json={
+                    "model": "think", "messages": [{"content": "hi"}],
+                })
+                await c.post("/v1/chat/completions", json={
+                    "model": "auto", "messages": [{"role": "user", "content": "hi"}],
+                })
+            logs = tail(2)
+            assert [e.protocol for e in logs] == ["anthropic", "openai-chat"]
+        run(t())
+
+
 class TestCodexAccount:
     """"auth": "codex" providers ride the local Codex CLI login into routing."""
 
@@ -591,7 +671,8 @@ class TestCodexAccount:
             encoding="utf-8")
 
     def _app(self, port):
-        providers = {"codex": Provider("codex", f"http://127.0.0.1:{port}", "codex")}
+        providers = {"openai-responses": {
+            "codex": Provider("codex", f"http://127.0.0.1:{port}", "codex")}}
         profile = RoutingProfile("cx", "openai-responses", 32, {
             "flash": Destination("codex", "gpt-5.6-luna"),
             "pro": Destination("codex", "gpt-5.6-luna"),
@@ -801,8 +882,10 @@ class TestCodexAccount:
             try:
                 self._login("tok-stale", "acct-1")
                 providers = {
-                    "codex": Provider("codex", f"http://127.0.0.1:{up_server.port}", "codex"),
-                    "deepseek": Provider("deepseek", f"http://127.0.0.1:{up_server.port}", "sk-x"),
+                    "openai-responses": {
+                        "codex": Provider("codex", f"http://127.0.0.1:{up_server.port}", "codex"),
+                        "deepseek": Provider("deepseek", f"http://127.0.0.1:{up_server.port}", "sk-x"),
+                    },
                 }
                 profile = RoutingProfile("cx", "openai-responses", 32, {
                     "flash": Destination("codex", "gpt-5.6-luna"),
@@ -931,8 +1014,10 @@ class TestClaudeAccount:
 
     def _app(self, port, flash="claude", pro="claude"):
         providers = {
-            "claude": Provider("claude", f"http://127.0.0.1:{port}", "claude"),
-            "deepseek": Provider("deepseek", f"http://127.0.0.1:{port}", "sk-x"),
+            "anthropic": {
+                "claude": Provider("claude", f"http://127.0.0.1:{port}", "claude"),
+                "deepseek": Provider("deepseek", f"http://127.0.0.1:{port}", "sk-x"),
+            },
         }
         profile = RoutingProfile("cc", "anthropic", 32, {
             "flash": Destination(flash, "claude-sonnet-4-5"),
@@ -1163,7 +1248,7 @@ class TestResolveAutoThreshold:
     def _auto_profile(self):
         return RoutingProfile(
             name="test",
-            protocol="anthropic",
+            protocols="anthropic",
             long_context_threshold=8000,
             destinations={
                 "flash": Destination("stepfun", "step-3.5-flash"),

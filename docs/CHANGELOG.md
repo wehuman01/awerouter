@@ -2,17 +2,20 @@
 
 ## Unreleased
 
-Multimodal sidekicks: image routing and the fall-through default become settings, enabling a pro-first profile where a non-multimodal flagship (GLM 5.3) does all the work and a multimodal flash (StepFun step-3.7-flash) takes only image-bearing requests — the new `step-glm-mm` template.
+Multimodal sidekicks and multi-protocol profiles: image routing and the fall-through default become settings, enabling a pro-first profile where a non-multimodal flagship (GLM 5.3) does all the work and a multimodal flash (StepFun step-3.7-flash) takes only image-bearing requests — the new `step-glm-mm` template. A profile's `protocol` now also accepts a list, so one serve instance can speak several wire protocols on a single port.
 
 ### Added
+- Multi-protocol profiles: `protocol` accepts an id or a non-empty list (`["anthropic", "openai-chat"]`). One serve instance registers every protocol's endpoints and serves each listed one; clients pick by endpoint path (`/v1/messages` vs `/v1/chat/completions` vs `/v1/responses`). Every destination provider must exist in each served providers.json group (per-protocol `base_url`s) — a name missing from one group dies at load naming the group. The serve banner shows `protocol -> anthropic+openai-chat` and prints one client-hint block per protocol; `awerouter list` shows the joined form; `config show` mirrors the config shape (id vs list); the request log's `protocol` field records the endpoint that actually served the request.
 - `settings.imageModel` (default `pro`) and `settings.defaultModel` (default `flash`) in routing.json. `imageModel` re-aims the image guard; `defaultModel` flips the cost-first fall-through (`pro` = everything text goes to the flagship). Both validated to `flash`/`pro` at load, shown by `config show`, and printed on the serve banner when they deviate from defaults (`image -> ... default -> ...`, and `main -> pro` instead of `main -> auto`).
-- Bundled template `step-glm-mm` (`awerouter init step-glm-mm`): same providers as step-glm (openai-chat: flash = StepFun step_plan `step-3.7-flash`, pro = GLM coding plan `glm-5.3`) with `imageModel: flash` + `defaultModel: pro` — the "solve multimodal, skip smart routing" preset. README/README_cn document it under "Common setup templates" with the swap-flash-to-`glm-5.3-flash` variant; README.ai.md lists it.
+- Bundled template `step-glm-mm` (`awerouter init step-glm-mm`): flash = StepFun step_plan `step-3.7-flash`, pro = GLM coding plan `glm-5.3`, with `imageModel: flash` + `defaultModel: pro` — the "solve multimodal, skip smart routing" preset. Dual-protocol: both vendors ship in the `anthropic` group too (stepfun `step_plan`, glm `open.bigmodel.cn/api/anthropic`), so one instance serves Claude Code (`ANTHROPIC_BASE_URL` without `/v1`) and openai-chat agents (`OPENAI_BASE_URL` with `/v1`) on the same port. README/README_cn document it under "Common setup templates" with the swap-flash-to-`glm-5.3-flash` variant; README.ai.md lists it.
 
 ### Changed
 - The image check moved from L3 to L1 (right below web_search, above tier labels and long context): image routing is a capability decision, not a difficulty guess — with `imageModel: flash` an image-bearing request must reach the multimodal model no matter what tier label it carries or how long it is.
+- `load_for_profile` and `create_app` now carry providers grouped by served protocol (`{protocol: {name: Provider}}`); `RoutingProfile.protocol` (string) became `RoutingProfile.protocols` (tuple) with a `protocol` display property — single-protocol configs and profiles are unaffected.
 
 ### Behavior notes
-- At default settings the only observable change is label placement: a request with an image now labels `image` even when it also crossed `longContextThreshold` or carried a tier label. Destination-wise, a background-tier request containing an image now routes pro (was flash) — vision content is hard, and the "any image goes to imageModel, period" invariant is the one worth keeping.
+- At default settings the only routing change is label placement: a request with an image now labels `image` even when it also crossed `longContextThreshold` or carried a tier label. Destination-wise, a background-tier request containing an image now routes pro (was flash) — vision content is hard, and the "any image goes to imageModel, period" invariant is the one worth keeping.
+- The `awerouter add` wizard still writes a single protocol; multi-protocol profiles are a hand edit (documented in README).
 
 ## v0.5.1 - 2026-08-28
 
