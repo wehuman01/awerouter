@@ -12,7 +12,17 @@ Per-profile settings overrides and template merging: every `settings` key (`back
 
 ## Unreleased
 
+Image bridge: `settings.imageBridge` (default `false`, opt-in) gives a text-only pro model second-hand vision. When a request carries images only in history — the final message is text — awerouter has the multimodal flash destination (`imageModel`) transcribe each distinct image, replaces the image blocks with the transcription text before routing, and the session falls through to `defaultModel` (pro) instead of being pinned to flash forever. A fresh upload this turn still routes to flash natively; `router.py` is unchanged — after the rewrite `has_image` is false and the request lands in L3/default, before the rewrite the L1 image guard routes it as always. The `step-glm-mm` template now ships with `imageBridge: true`.
+
 ### Added
+- `settings.imageBridge` (`true`/`false`, global or per profile, validated at load and shown by `config show`): the request-pipeline transform described above. It runs before rtk compression and routing in `_proxy_flow`, so what rtk compresses, what L3 scores, and what goes upstream are exactly the same body; `handle_count_tokens` applies the same bridge so the client's context-window estimate matches. The serve banner prints `image bridge -> on (...)` naming the transcribing destination.
+- `awerouter.vision` (pure logic): per-protocol content keys (`image_key`), caption body building and response parsing for all three wire protocols, in-place image-block rewriting (`[Image n, transcribed by <model>]` text blocks), and a content-addressed caption cache (bounded FIFO, process lifetime — a restart re-transcribes each distinct image once; the cache key includes provider+model, so a destination switch never serves another model's transcription).
+- Failure fallback: any caption call failure (network, non-200, empty text) leaves the request body untouched — one printed line, and the L1 image guard routes the request exactly as before. Codex subscription logins (`auth: "codex"`, SSE-only backend) skip the bridge entirely.
+- `step-glm-mm` template sets `imageBridge: true`; `init --merge` flags a newly-written `imageBridge` as a behavior shift next to `imageModel`/`defaultModel`. README/README_cn document it as an "Image bridge" (图片桥接) section; README.ai.md and the awerouter skill mention the template flag.
+
+### Behavior notes
+- Bridged "vision" is second-hand: its ceiling is the transcription quality, and each distinct image costs one extra flash call (cached per image content for the process lifetime).
+- The flash→pro rescue fallback (flash down on an un-rewritten image request) still carries raw images to a possibly text-only pro — pre-existing behavior, unchanged and out of scope.
 
 ## v0.5.2
 

@@ -467,6 +467,39 @@ class TestExtractOpenAIResponses:
         assert r.file_search_tokens == estimate_tokens("hits")
 
 
+class TestHasNewImage:
+    """has_new_image: image in the FINAL message (fresh upload) vs stale
+    history — the signal the image bridge keys on."""
+
+    def test_anthropic_image_in_last_message(self):
+        r = extract("anthropic", {"messages": [
+            {"content": "hi"},
+            {"content": [{"type": "image", "data": "x"}]},
+        ]})
+        assert r.has_image and r.has_new_image
+
+    def test_anthropic_image_only_in_history(self):
+        r = extract("anthropic", {"messages": [
+            {"content": [{"type": "image", "data": "x"}]},
+            {"role": "assistant", "content": "ok"},
+            {"content": "follow-up"},
+        ]})
+        assert r.has_image and not r.has_new_image
+
+    def test_openai_chat_image_in_last_message(self):
+        r = extract("openai-chat", {"messages": [
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "x"}}]},
+        ]})
+        assert r.has_new_image
+
+    def test_responses_image_in_last_message(self):
+        r = extract("openai-responses", {"input": [
+            {"role": "user", "content": [{"type": "input_image", "image_url": "x"}]},
+        ]})
+        assert r.has_new_image
+
+
 def test_extract_unknown_protocol_raises():
     with pytest.raises(ValueError):
         extract("nope", {})

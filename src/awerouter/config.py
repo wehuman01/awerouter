@@ -283,7 +283,8 @@ def _parse_tool_routing(raw, base: ToolRoutingConfig | None = None,
 # instead of silently inheriting the global value.
 _SETTINGS_KEYS = frozenset({
     "backgroundModel", "thinkModel", "webSearchModel", "imageModel",
-    "defaultModel", "searchResultDiscount", "toolRouting", "longContextAuto",
+    "defaultModel", "searchResultDiscount", "imageBridge", "toolRouting",
+    "longContextAuto",
 })
 
 # Keys that belong to the profile body itself (settings keys may join them).
@@ -321,6 +322,10 @@ def _parse_settings(raw: dict, base: Settings | None = None,
     if not 0 <= discount <= 1:
         die(f"{where} 'searchResultDiscount' must be in [0, 1], got: {discount}")
 
+    raw_bridge = raw.get("imageBridge", b.image_bridge)
+    if not isinstance(raw_bridge, bool):
+        die(f"{where} 'imageBridge' must be true or false, got: {raw_bridge!r}")
+
     return Settings(
         background_model=str(raw.get("backgroundModel", b.background_model)),
         think_model=str(raw.get("thinkModel", b.think_model)),
@@ -329,6 +334,7 @@ def _parse_settings(raw: dict, base: Settings | None = None,
         image_model=_model_field(raw, "imageModel", b.image_model, where),
         default_model=_model_field(raw, "defaultModel", b.default_model, where),
         search_result_discount=discount,
+        image_bridge=raw_bridge,
         long_context_auto=_parse_auto_threshold(
             raw.get("longContextAuto"), b.long_context_auto, where),
         tool_routing=_parse_tool_routing(raw.get("toolRouting"), b.tool_routing, where),
@@ -525,8 +531,10 @@ def init_config(template: str = "default") -> None:
 
 
 # Settings keys whose value re-routes every profile when it first appears:
-# the image guard (default pro) and the fall-through destination (default flash).
-_BEHAVIOR_SETTINGS_DEFAULTS = {"imageModel": "pro", "defaultModel": "flash"}
+# the image guard (default pro), the fall-through destination (default flash),
+# and the image bridge (default off).
+_BEHAVIOR_SETTINGS_DEFAULTS = {"imageModel": "pro", "defaultModel": "flash",
+                               "imageBridge": False}
 
 
 def merge_config(template: str = "default") -> dict:
@@ -665,6 +673,7 @@ def format_routing_display(settings: Settings, profiles: dict[str, RoutingProfil
             "imageModel": settings.image_model,
             "defaultModel": settings.default_model,
             "searchResultDiscount": settings.search_result_discount,
+            "imageBridge": settings.image_bridge,
             "toolRouting": {
                 "webSearch": settings.tool_routing.web_search or settings.web_search_model,
                 "edit": settings.tool_routing.edit,

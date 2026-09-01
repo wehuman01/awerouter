@@ -103,7 +103,7 @@ Rules:
 ```
 
 Rules:
-- `settings` is optional. Tool-keyed rules live in `settings.toolRouting` (`webSearch`, `edit`); the legacy top-level `webSearchModel` still works. `imageModel` (default pro) re-aims the image guard; `defaultModel` (default flash) flips the fall-through. `longContextThreshold` is an integer or `"auto"` (calibrated from recent traffic per `settings.longContextAuto`).
+- `settings` is optional. Tool-keyed rules live in `settings.toolRouting` (`webSearch`, `edit`); the legacy top-level `webSearchModel` still works. `imageModel` (default pro) re-aims the image guard; `defaultModel` (default flash) flips the fall-through. `imageBridge` (default false, opt-in) has the `imageModel` destination transcribe history images to text so a text-only pro keeps the session — fresh uploads still route to `imageModel` natively; transcription failures keep the image route. `longContextThreshold` is an integer or `"auto"` (calibrated from recent traffic per `settings.longContextAuto`).
 - Each profile needs `protocol`, `longContextThreshold`, and `destinations`. `protocol` accepts one id or a list (`["anthropic", "openai-chat"]`) — a list serves several wire protocols on one port (clients pick by endpoint path); every destination provider must exist in each served providers.json group.
 - Supported protocols: `anthropic`, `openai-chat`, `openai-responses`.
 - Optional `"rtk": true` enables RTK tool-result compression (default off): verbose tool output (git diff/status/log, grep, listings, build logs) is compressed before forwarding. Fail-open, deterministic; error results and short content pass through. Per-request opt-out header: `X-Awerouter-Token-Saver: off`. After enabling, re-run `awerouter usage calibrate` (thresholds tuned on uncompressed traffic over-trigger pro).
@@ -115,7 +115,7 @@ awerouter evaluates requests in first-match-wins order:
 | Layer | Signal | Result |
 |-------|--------|--------|
 | L1 | `web_search` tool present | `toolRouting.webSearch` (default pro; legacy `webSearchModel` works) |
-| L1 | image present | `settings.imageModel` (default pro; flash for multimodal-sidekick profiles) |
+| L1 | image present | `settings.imageModel` (default pro; flash for multimodal-sidekick profiles). With `imageBridge` on, only images in the FINAL message route here — history images are transcribed to text by the imageModel destination and the request falls through (codex subscription logins skip the bridge) |
 | L2 | tier model label (`c1/flash`, `c1/think`, or equivalent model mapping) | flash or pro |
 | L3 | long context (token count over all request content) | pro if above threshold |
 | L4 | trailing tool batch changed code (`edit`/`write`/`apply_patch`/...) | `toolRouting.edit` (default pro, `null` disables) |
@@ -136,8 +136,8 @@ Run:
 awerouter init                    # 'default' template
 awerouter init step-glm           # key-only combo: flash=StepFun step_plan, pro=GLM coding plan
 awerouter init glm-codex          # flash=GLM coding plan, pro=ChatGPT subscription (auth: "codex")
-awerouter init step-glm-mm        # multimodal sidekick, dual-protocol (anthropic+openai-chat on one port): pro=GLM glm-5.3 does everything, flash=StepFun step-3.7-flash takes images only
-awerouter init step-glm-mm --merge  # add a template to an EXISTING config: fills missing providers/profiles/settings, never overwrites (warns when imageModel/defaultModel are newly set)
+awerouter init step-glm-mm        # multimodal sidekick, dual-protocol (anthropic+openai-chat on one port): pro=GLM glm-5.3 does everything, flash=StepFun step-3.7-flash takes images only; imageBridge on — follow-up text turns return to pro carrying flash's transcriptions of history images
+awerouter init step-glm-mm --merge  # add a template to an EXISTING config: fills missing providers/profiles/settings, never overwrites (warns when imageModel/defaultModel/imageBridge are newly set)
 ```
 
 Templates are `<name>.providers.json` + `<name>.routing.json` pairs; an unknown name fails with the list of available ones. This creates `providers.json` and `routing.json` if missing. With `--merge` on an existing config, only missing entries are added (skipped: providers/profiles already present, settings keys already set) and the merged config is validated before the command finishes.

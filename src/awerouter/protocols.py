@@ -278,6 +278,14 @@ def _extract_anthropic(body: dict) -> InspectResult:
         if batch:   # a later message with tool_use replaces the trailing batch
             last_tools = tuple(batch)
             last_phase = "edit" if batch_edit else ""
+    has_new_image = False
+    if messages and isinstance(messages[-1], dict):
+        last_content = messages[-1].get("content")
+        if isinstance(last_content, list):
+            has_new_image = any(
+                isinstance(blk, dict) and blk.get("type") == "image"
+                for blk in last_content
+            )
     token_count, breakdown = _summarize(b)
     return InspectResult(
         token_count=token_count,
@@ -288,6 +296,7 @@ def _extract_anthropic(body: dict) -> InspectResult:
         file_search_tokens=estimate_tokens(" ".join(t for t in search_texts if t)),
         last_tools=last_tools,
         last_phase=last_phase,
+        has_new_image=has_new_image,
     )
 
 
@@ -356,6 +365,14 @@ def _extract_openai_chat(body: dict) -> InspectResult:
         if batch:   # a later message with tool_calls replaces the trailing batch
             last_tools = tuple(batch)
             last_phase = "edit" if batch_edit else ""
+    has_new_image = False
+    if messages and isinstance(messages[-1], dict):
+        last_content = messages[-1].get("content")
+        if isinstance(last_content, list):
+            has_new_image = any(
+                isinstance(p, dict) and p.get("type") == "image_url"
+                for p in last_content
+            )
     token_count, breakdown = _summarize(b)
     return InspectResult(
         token_count=token_count,
@@ -366,6 +383,7 @@ def _extract_openai_chat(body: dict) -> InspectResult:
         file_search_tokens=estimate_tokens(" ".join(t for t in search_texts if t)),
         last_tools=last_tools,
         last_phase=last_phase,
+        has_new_image=has_new_image,
     )
 
 
@@ -409,7 +427,8 @@ def _extract_openai_responses(body: dict) -> InspectResult:
     search_calls: dict = {}   # call_id -> output counts as file search
     search_texts: list[str] = []
     last_tools: tuple = ()   # trailing run of consecutive function_call items
-    last_phase = ""
+    last_phase: str = ""
+    last_msg_parts: list | None = None   # content of the final message item
     batch: list[str] = []
     batch_edit = False
 
@@ -456,6 +475,7 @@ def _extract_openai_responses(body: dict) -> InspectResult:
         if isinstance(content, str):
             b["messages"].append(content)
         elif isinstance(content, list):
+            last_msg_parts = content
             for part in content:
                 if not isinstance(part, dict):
                     continue
@@ -464,6 +484,10 @@ def _extract_openai_responses(body: dict) -> InspectResult:
                 elif part.get("type") == "input_image":
                     has_image = True
     _commit_batch()   # input may end mid-run
+    has_new_image = any(
+        isinstance(p, dict) and p.get("type") == "input_image"
+        for p in (last_msg_parts or [])
+    )
     token_count, breakdown = _summarize(b)
     return InspectResult(
         token_count=token_count,
@@ -474,6 +498,7 @@ def _extract_openai_responses(body: dict) -> InspectResult:
         file_search_tokens=estimate_tokens(" ".join(t for t in search_texts if t)),
         last_tools=last_tools,
         last_phase=last_phase,
+        has_new_image=has_new_image,
     )
 
 

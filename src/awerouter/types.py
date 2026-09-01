@@ -67,6 +67,8 @@ class Settings:
     image_model: str = "pro"          # L1 destination key for image-bearing requests (multimodal sidekick: flash)
     default_model: str = "flash"      # fall-through destination key (pro-first profiles: pro)
     search_result_discount: float = 0.3  # L3 weight of file-search (Grep/Glob/LS) result tokens; 1 = off
+    image_bridge: bool = False       # flash transcribes history images to text;
+                                     # a text-only pro continues image sessions (opt-in)
     long_context_auto: AutoThresholdConfig = field(default_factory=AutoThresholdConfig)
     tool_routing: ToolRoutingConfig = field(default_factory=ToolRoutingConfig)
 
@@ -117,6 +119,10 @@ class InspectResult:
     # it changed code, else ""; the L4 consequence checkpoint keys on it.
     last_tools: tuple = ()
     last_phase: str = ""
+    # Image present in the FINAL message — a fresh upload this turn (routed to
+    # the multimodal imageModel natively); has_image alone means stale history
+    # (bridgeable to text when settings.imageBridge is on).
+    has_new_image: bool = False
 
 
 @dataclass

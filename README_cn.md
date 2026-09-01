@@ -134,13 +134,15 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 # aweswitch profile 环境变量：ANTHROPIC_MODEL=auto, _HAIKU_=flash, _OPUS_=pro
 ```
 
-内置模板源码位于 [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/)；`awerouter init <template>` 会将对应文件生成到你的配置目录。已经有配置了？`awerouter init <template> --merge` 把模板里缺的 provider、profile 和 settings 补进现有配置——已有条目一律不覆盖，profile 重名则跳过，新写入的 `imageModel`/`defaultModel` 会打印警告（它们会改变所有 profile 的路由行为）。
+内置模板源码位于 [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/)；`awerouter init <template>` 会将对应文件生成到你的配置目录。已经有配置了？`awerouter init <template> --merge` 把模板里缺的 provider、profile 和 settings 补进现有配置——已有条目一律不覆盖，profile 重名则跳过，新写入的 `imageModel`/`defaultModel`/`imageBridge` 会打印警告（它们会改变所有 profile 的路由行为）。
 
 ## 配置
 
 `~/.config/awerouter/` 下两个文件（`AWEROUTER_CONFIG_DIR` 环境变量覆盖目录）：
 
-**providers.json** — 端点 + 密钥，按线上协议分组（`config show` 自动脱敏）：
+### providers.json
+
+端点 + 密钥，按线上协议分组（`config show` 自动脱敏）：
 
 ```json
 {
@@ -212,7 +214,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 
 ### Codex 账号（订阅登录）
 
-`openai-responses` 组里的 `"auth": "codex"` 表示用本地 Codex CLI 的登录态（`$CODEX_HOME/auth.json`，默认 `~/.codex/auth.json`）代替 API key——订阅自带的模型就能和 key 计费的模型混在同一个 flash/pro 路由里：
+`openai-responses` 组里的 `"auth": "codex"` 表示用本地 Codex CLI 的登录态（`~/.codex/auth.json`）代替 API key——订阅自带的模型就能和 key 计费的模型混在同一个 flash/pro 路由里：
 
 ```json
 "openai-responses": {
@@ -228,20 +230,21 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 }
 ```
 
-任何说 Responses 协议的客户端（Codex 本身，或任何能配 OpenAI Responses base URL 的 agent）把 base URL 指到 awerouter、随便填个哑 key 即可；真正的 `Authorization: Bearer <access_token>` 和 `chatgpt-account-id` 头由 awerouter 每个请求现盖。针对后端的几个怪癖会做少量归一化：`store` 强制为 `false`（零数据保留，拒绝 `store: true`）、`max_output_tokens` 直接剥掉（会被拒）、后端没有非流式模式——非流式请求在上游以 SSE 运行，回程收敛成单个 JSON 响应（output 条目从流事件重建），流式/非流式客户端都能直接用。
+任何说 Responses 协议的客户端把 base URL 指到 awerouter、填个哑 key 即可；真正的鉴权头由 awerouter 每请求现盖，并为后端怪癖做少量归一化：`store` 强制 `false`、剥掉 `max_output_tokens`、非流式请求以 SSE 跑完再收敛成单个 JSON 回复。
 
 行为要点：
 
-- **只读登录态，不做刷新。** OpenAI 的 refresh token 是单次有效、旋转式的——在这里刷新会把本地 CLI 的登录踢失效，所以刷新职责永远归 CLI。awerouter 每个请求都重读 `auth.json`，遇到上游 401 还会再重读重试一次（通常是 CLI 刚刷新过）。重读后仍然 401 说明登录真的过期了：flash 请求会兜底到带 key 的 pro（每次兜底打印一行，`usage log` 里带 `401-retry` 标记）；只有 pro 也骑同一个 codex 登录时才把 401 透传给客户端。access token 实测约 10 天有效——照常使用 `codex`（或 awewarm 保温）即可保持登录新鲜。
-- **感知系统代理。** codex provider 遵循 `https_proxy`/`all_proxy`（和 Codex CLI 遵循的同一组变量）——chatgpt.com 在很多网络下必须走 shell 代理才通。其他 provider 永远直连，行为不变。
-- **模型名会漂移。** `gpt-5-codex`/`gpt-5.1-codex` 已被后端 400 拒绝，当前可用的是 CLI 在用的名字（写作本文时是 `gpt-5.6-luna`）。模型名来自 destination 配置，改名只需改 routing.json 一行。
-- **没登录？** `auth.json` 缺失或无效时请求返回 503 并提示 `run: codex login`，serve 启动时也会打一行警告。这里刻意不做兜底（区别于会话中途过期）：登录缺失是配置错误，应该立刻暴露——静默落到付费 pro 会把错误和账单一起藏起来。
+- **只读登录，不刷新。** 在这里刷新会把 CLI 的登录踢失效，所以刷新归 CLI；awerouter 每请求重读 `auth.json`，遇 401 再重读重试一次。access token 约十天有效，照常用 `codex`（或 awewarm 保温）即可。
+- **登录过期。** 重读后仍 401：flash 兜底到带 key 的 pro（`usage log` 带 `401-retry` 标记）；只有 pro 也用同一登录时才把 401 透传。
+- **感知系统代理。** 遵循 `https_proxy`/`all_proxy`——chatgpt.com 常需要代理才通；其他 provider 永远直连。
+- **模型名会漂移。** 当前可用的是 CLI 在用的名字（写作本文时是 `gpt-5.6-luna`），改名只需动 routing.json 一行。
+- **没登录？** 返回 503 并提示 `run: codex login`，serve 启动时也打警告——刻意不兜底：登录缺失是配置错误，应该立刻暴露，静默落到付费 pro 会把错误和账单一起藏起来。
 
-该哨兵值只允许出现在 `openai-responses` 组——ChatGPT Codex 后端只说 Responses 协议，进不了 `anthropic`/`openai-chat` 的 profile。
+该哨兵值只允许出现在 `openai-responses` 组——ChatGPT Codex 后端只说 Responses 协议。
 
 ### Claude 账号（订阅登录）
 
-`anthropic` 组里的 `"auth": "claude"` 表示用 Claude Pro/Max 订阅登录作为上游——而且这个登录由 awerouter 自己持有：本机**不需要**（也不会借用）Claude Code CLI 的登录态，`awerouter login claude` 走的就是 Claude Code CLI 同款 PKCE 设备授权流程，token 存在 `~/.config/awerouter/claude-auth.json`（权限 0600）。订阅自带的模型就这样和 key 计费的模型混进同一个 flash/pro 路由：
+`anthropic` 组里的 `"auth": "claude"` 表示用 Claude Pro/Max 订阅登录作为上游。这个登录由 awerouter 自己持有（`awerouter login claude` 走 Claude Code 同款授权流程，token 存 `~/.config/awerouter/claude-auth.json`，权限 0600），不借用本机 CLI 的登录态。订阅自带的模型就这样和 key 计费的模型混进同一个 flash/pro 路由：
 
 ```json
 "anthropic": {
@@ -262,12 +265,12 @@ awerouter login claude    # 打开浏览器授权，把回调页显示的 code �
 awerouter logout claude   # 删除本地登录
 ```
 
-任何说 Anthropic 协议的客户端把 base URL 指到 awerouter、随便填个哑 key 即可（Claude Code 设 `ANTHROPIC_BASE_URL`——CLI 自己的登录完全不受影响，每次 OAuth 登录都是独立会话）。真正的 `Authorization: Bearer <access_token>` 和 OAuth 必需的 `anthropic-beta: oauth-2025-04-20` 标记由 awerouter 每个请求现盖，请求体不做任何改写。行为要点：
+任何说 Anthropic 协议的客户端把 base URL 指到 awerouter、填个哑 key 即可（Claude Code 设 `ANTHROPIC_BASE_URL`，CLI 自己的登录完全不受影响）；鉴权头和 OAuth 标记由 awerouter 每请求现盖，请求体不做改写。行为要点：
 
-- **刷新归 awerouter。** 和 codex 的只读设计正好相反：这个登录属于 awerouter，所以由它刷新——access token 只有几小时有效，用旋转式 refresh token 自动续期，新 token 原子落盘后请求才继续。进程内锁 + 锁下重读避免并发请求重复刷新；另一个 awerouter 进程抢先刷新也能恢复（刷新被拒 + 文件已变 → 直接用赢家的 token）。
-- **401 处理与 codex 对称。** 上游 401 先强制刷新重试同一 destination 一次；重试后仍然 401 说明登录失效——flash 请求兜底到带 key 的 pro（每次兜底打印一行，`usage log` 里带 `401-retry` 标记），只有 pro 也骑同一个 claude 登录时才把 401 透传。登录缺失返回 503 并提示 `run: awerouter login claude`，serve 启动时同样打警告——和 codex 一样刻意不做兜底。
-- **感知系统代理。** 和 codex provider 一样遵循 `https_proxy`/`all_proxy`——api.anthropic.com 和 platform.claude.com 在很多网络下必须走 shell 代理。
-- **线协议会漂移，注意 ToS。** 端点（client id、`platform.claude.com` 授权/换 token，旧的 `console.anthropic.com` 作为 404/405 回退）和头集合都是社区共用的逆向公开契约，随时可能失效；且 Anthropic 2026 年的政策限制第三方工具使用订阅 OAuth token——这是骑你自己的订阅，风险自担。
+- **刷新归 awerouter。** 与 codex 正相反：这个登录属于 awerouter，由它用 refresh token 自动续期，新 token 落盘后请求才继续。
+- **登录失效。** 401 先强制刷新重试一次；刷新后仍 401 则 flash 兜底到带 key 的 pro。登录缺失返回 503 并提示 `run: awerouter login claude`——和 codex 一样刻意不兜底。
+- **感知系统代理。** 同 codex——api.anthropic.com 常需要代理才通。
+- **注意 ToS。** 端点和头集合是社区逆向的公开契约，随时可能失效；且 Anthropic 2026 年政策限制第三方工具使用订阅 OAuth token——骑你自己的订阅，风险自担。
 
 该哨兵值只允许出现在 `anthropic` 组——订阅后端说的是 Messages 协议。
 
@@ -315,7 +318,7 @@ awerouter init step-glm      # 需要设置 STEPFUN_AUTH_TOKEN 和 GLM_API_KEY
 awerouter init glm-codex     # 需要 GLM_API_KEY，且 codex login 登录过 ChatGPT 订阅
 ```
 
-**step-glm-mm** —— 多模态侧翼，不做智能分流：非多模态旗舰（GLM coding plan 的 glm-5.3）包揽全部主要工作，只有带图的请求交给多模态 flash（StepFun step-3.7-flash）。厂商与 step-glm 相同，反转全靠 settings。双协议（`["anthropic", "openai-chat"]`）：一个 serve 实例在同一端口同时接 Claude Code *和* openai-chat 系 agent——每种协议走自己的 provider 条目：
+**step-glm-mm** —— 旗舰模型配一双眼睛：glm-5.3 做全部文本工作，带图的请求交给多模态的 step-3.7-flash 看图转述；模板开启 `imageBridge` 后，后续纯文本轮会带着 flash 的图片转述回到 glm-5.3 继续。双协议（`["anthropic", "openai-chat"]`）：一个端口同时接 Claude Code 和 openai-chat 系 agent——每种协议走自己的 provider 条目：
 
 ```json
 "anthropic": {
@@ -329,13 +332,6 @@ awerouter init glm-codex     # 需要 GLM_API_KEY，且 codex login 登录过 Ch
 ```
 
 ```json
-"settings": {
-  "imageModel": "flash",
-  "defaultModel": "pro"
-}
-```
-
-```json
 "cc-router-1": {
   "protocol": ["anthropic", "openai-chat"],
   "destinations": {
@@ -345,17 +341,27 @@ awerouter init glm-codex     # 需要 GLM_API_KEY，且 codex login 登录过 Ch
 }
 ```
 
+```json
+"settings": {
+  "imageModel": "flash",
+  "defaultModel": "pro",
+  "imageBridge": true
+}
+```
+
 ```bash
 awerouter init step-glm-mm        # 需要设置 STEPFUN_AUTH_TOKEN 和 GLM_API_KEY
 # Claude Code:    export ANTHROPIC_BASE_URL=http://127.0.0.1:20128        （不带 /v1）
 # openai-chat:    export OPENAI_BASE_URL=http://127.0.0.1:20128/v1       （带 /v1）
 ```
 
-`imageModel: flash` 把图片护栏改指多模态模型（它的优先级高于档位标签和长文本——pro 看不了的图绝不能送到 pro）；`defaultModel: pro` 翻转了默认兜底（原本 cost-first 落 flash），于是所有纯文本请求都走旗舰。后台档任务仍走 flash。想只用一家？把 flash 改成 GLM 自家的多模态 `glm-5.3-flash`（`https://open.bigmodel.cn/api/v1`）——每个协议组各改一行。
+> **不需要智能路由，只想让旗舰模型看得见图？** 上面这两个 settings 就是全部秘密：`imageModel: "flash"` 让带图请求交给多模态模型，`defaultModel: "pro"` 让其余请求全部走旗舰。把这两行抄进任何已有配置即可，不需要使用整个模板。想只买 GLM 一家？flash 换成 GLM 自家的 `glm-5.3-flash` 即可。再加一行 `"imageBridge": true`，后续纯文本轮就能带着 flash 转述的图片内容回到旗舰（见「图片桥接」）。
 
 后端模型名会漂移（见「Codex 账号」一节）——改名只需动 routing.json 一行。
 
-**routing.json** — 路由策略，不含密钥（可以进 git）：
+### routing.json
+
+路由策略，不含密钥（可以进 git）：
 
 ```json
 {
@@ -408,6 +414,7 @@ settings 的每个键也都可以**直接写在 profile 体内**，与 `protocol
 | `imageModel` | `flash` / `pro` | `pro` | L1：带图请求去向（能力护栏——优先级高于档位和长度） |
 | `defaultModel` | `flash` / `pro` | `flash` | 所有层都不匹配时的兜底去向 |
 | `searchResultDiscount` | 0–1 数字 | `0.3` | L3：文件搜索（Grep/Glob/LS）结果 token 的权重；`1` = 关闭 |
+| `imageBridge` | `true` / `false` | `false` | flash 把历史图片转写成文字，纯文本的 pro 接管图片会话（opt-in；见「图片桥接」） |
 | `toolRouting.webSearch` | `flash` / `pro` / `null` | `null` | 覆盖 `webSearchModel` 的 web_search 护栏去向 |
 | `toolRouting.edit` | `flash` / `pro` / `null` | `pro` | L4：代码刚被修改后的那一轮去向；`null` 关闭该检查点 |
 | `longContextAuto.percentile` | 1–99 | `95` | `"auto"` 阈值取 L3 分布的哪个分位 |
@@ -431,16 +438,20 @@ first-match-wins 管线，逐请求评估：
 
 | 层 | 信号 | 决策 |
 |----|------|------|
-| L1 能力护栏 | body 含 `web_search` 工具；含图片内容 | `toolRouting.webSearch`（默认 **pro**；旧顶层 `webSearchModel` 仍兼容）；`settings.imageModel`（默认 **pro**） |
+| L1 能力护栏 | body 含 `web_search` 工具；含图片内容 | `toolRouting.webSearch`（默认 **pro**；旧顶层 `webSearchModel` 仍兼容）；`settings.imageModel`（默认 **pro**；开 `imageBridge` 后只有*本轮新传*的图才走这里——已转写的历史图片落到 `defaultModel`） |
 | L2 档位匹配 | `model == c1/flash` 或 `c1/think` | flash / pro |
 | L3 难度评分 | token（全部请求内容）超阈值 | **pro**；否则继续 |
 | L4 编辑检查点 | 尾部工具批次改写了代码（`edit`/`write`/`apply_patch` 等） | `toolRouting.edit`（默认 **pro**，`null` 关闭） |
 
 CC 的 `/model` 选择器设置 tier model id（c1/flash / c1/pro / c1/think）。awerouter 直接读取该字段做路由——不猜语义、不用关键词、不跑分类器。图片护栏是能力规则而非难度猜测：排在档位标签和长文本之上，`imageModel: flash` 时带图请求无论档位多高、上下文多长都到多模态模型（看不见图的模型绝不能收到图）。所有层都不匹配的请求落到 `settings.defaultModel`（默认 flash——cost-first）。
 
-L4 是后果检查点，不是难度猜测。结构信号看不到*决定*编辑的那一轮——那一轮按它之前的信号路由——但代码刚被改写的**下一轮**是审查轮（验证、继续、交代），所以送 pro：flash 起草，pro 审查。信号取**尾部并行批次**：其中任何一个编辑类调用都会标记该批次（`[Grep, Edit]` 和 `[Edit, Grep]` 结果一致）。shell 包装的调用（codex 的 `exec_command`/`shell`）按命令文本分类——`apply_patch` 算编辑。它排在 L3 之下是刻意的——已超过 `longContextThreshold` 的会话无论刚跑了什么工具都留在 pro，flash 不会拿到可能退化的超长上下文，长上下文这一跨越也保持 flash→pro 单向（阈值以下：编辑检查点轮次走 pro，其余轮次回落 flash）。编辑类覆盖 `Edit`/`Write`/`NotebookEdit`/`apply_patch`/`replace_in_file` 等，大小写不敏感匹配。早期版本在这里还把搜索/机械阶段路由到 flash；由于 flash 本来就是兜底默认，这些规则不改变任何行为，v0.4.8 已移除。
+L4 是后果检查点，不是难度猜测：代码刚被改写的**下一轮**是审查轮（验证、继续、交代），送 pro——flash 起草，pro 审查。信号取尾部并行工具批次，其中任何一个编辑类调用（`Edit`/`Write`/`NotebookEdit`/`apply_patch` 等，大小写不敏感；shell 包装的调用按命令文本分类）都会标记该批次。它排在 L3 之下是刻意的：超过 `longContextThreshold` 的会话留在 pro，flash→pro 的长上下文跨越保持单向。
 
 所有按工具路由的规则（含 L1 的 `webSearch`）统一放在 `settings.toolRouting`（`webSearch`/`edit`），serve 横幅用一行 `tool -> ...` 打印生效的映射。
+
+## 图片桥接
+
+`settings.imageBridge: true`（opt-in，step-glm-mm 模版已开启）给纯文本的 pro 模型一双二手的眼睛：当请求里的图片只存在于*历史*——最后一条消息是纯文本——awerouter 先让多模态的 flash（`imageModel`）把每张不同的图片转写一次，再把图片块替换成转写文本后照常路由，会话因此落到 `defaultModel`（pro），而不是永远钉死在 flash 上。本轮新传的图片照旧原生路由给 flash；`/v1/messages/count_tokens` 看到的是同样的改写后请求体，估算与实发一致。转写按图片内容缓存在进程内存（重启后每张图重新转写一次）；任何一次转写失败，请求体保持原样，L1 图片护栏照旧路由。codex 订阅登录跳过桥接（其 SSE-only 后端无法服务非流式转写调用）。
 
 ## Token Saver（RTK 省流）
 

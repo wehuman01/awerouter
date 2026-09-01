@@ -134,13 +134,15 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 # aweswitch profile env: ANTHROPIC_MODEL=auto, _HAIKU_=flash, _OPUS_=pro
 ```
 
-The bundled template source is [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/); `awerouter init <template>` generates its matching files in your configuration directory. Already have a config? `awerouter init <template> --merge` adds the template's missing providers, profiles, and settings to it — existing entries are never overwritten, profile id collisions are skipped, and newly-set `imageModel`/`defaultModel` print a warning since they re-route every profile.
+The bundled template source is [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/); `awerouter init <template>` generates its matching files in your configuration directory. Already have a config? `awerouter init <template> --merge` adds the template's missing providers, profiles, and settings to it — existing entries are never overwritten, profile id collisions are skipped, and newly-set `imageModel`/`defaultModel`/`imageBridge` print a warning since they re-route every profile.
 
 ## Config
 
 Two files in `~/.config/awerouter/` (override with `AWEROUTER_CONFIG_DIR`):
 
-**providers.json** — endpoints + keys, grouped by wire protocol (redacted in `config show`):
+### providers.json
+
+Endpoints + keys, grouped by wire protocol (redacted in `config show`):
 
 ```json
 {
@@ -212,7 +214,7 @@ Guard against a forgotten key: a provider with no `auth` whose `base_url` is **n
 
 ### Codex account (subscription login)
 
-`"auth": "codex"` in the `openai-responses` group rides the local Codex CLI login (`$CODEX_HOME/auth.json`, default `~/.codex/auth.json`) instead of an API key — the subscription's own models mix into flash/pro routing next to key-based providers:
+`"auth": "codex"` in the `openai-responses` group rides the local Codex CLI login (`~/.codex/auth.json`) instead of an API key — the subscription's own models mix into flash/pro routing next to key-based providers:
 
 ```json
 "openai-responses": {
@@ -228,20 +230,21 @@ Guard against a forgotten key: a provider with no `auth` whose `base_url` is **n
 }
 ```
 
-Any Responses-speaking client (Codex itself, or any agent with a configurable OpenAI Responses base URL) points at awerouter with a dummy key; the real `Authorization: Bearer <access_token>` plus `chatgpt-account-id` headers are injected per request. A few body fields are normalized for the backend's quirks: `store` is forced to `false` (zero-data-retention, `store: true` is rejected), `max_output_tokens` is dropped (rejected), and since the backend has no non-streaming mode a non-streaming request goes upstream as SSE and comes back buffered into a single JSON response (output items rebuilt from the stream) — both client styles just work.
+Any Responses-speaking client points at awerouter with a dummy key; the real auth headers are injected per request, and a few backend quirks are normalized: `store` forced to `false`, `max_output_tokens` dropped, non-streaming requests run upstream as SSE and come back buffered into a single JSON reply.
 
 How it behaves:
 
-- **Read-only login, no refresh.** OpenAI refresh tokens are single-use and rotating; refreshing here would invalidate the local CLI's login, so the CLI keeps sole ownership of refresh. awerouter re-reads `auth.json` on every request, and once more on an upstream 401 (the CLI usually refreshed it). A 401 that survives the re-read means the login itself is expired: flash requests then fall back to a keyed pro destination — one printed line per fallback, and a `401-retry` marker in `usage log` — surfacing the 401 only when pro rides the same codex login. The access token lives ~10 days — keep using `codex` (or awewarm) so the login stays fresh.
-- **Proxy-aware.** codex providers honor `https_proxy`/`all_proxy` (the same vars the Codex CLI honors) — chatgpt.com often needs the shell proxy to be reachable. Other providers always connect directly.
-- **Model names drift.** `gpt-5-codex`/`gpt-5.1-codex` are already rejected by the backend with a 400; the current name is whatever the CLI uses (`gpt-5.6-luna` at the time of writing). The model comes from your destination entry, so a rename is a one-line routing.json edit.
-- **No login yet?** A missing/invalid `auth.json` turns requests into a 503 with a `run: codex login` hint, and serve prints a warning at startup. Deliberately no fallback there, unlike an expired token mid-session: a missing login is a config error best fixed immediately, and silently serving it from a paid pro would hide both the error and the bill.
+- **Read-only login, no refresh.** Refreshing here would invalidate the CLI's login, so refresh stays with the CLI; awerouter re-reads `auth.json` per request and once more on a 401. The access token lives ~10 days — keep using `codex` (or awewarm).
+- **Expired login.** A 401 that survives the re-read: flash falls back to a keyed pro (`401-retry` marker in `usage log`); the 401 surfaces to the client only when pro rides the same login.
+- **Proxy-aware.** Honors `https_proxy`/`all_proxy` — chatgpt.com often needs the proxy; every other provider always connects directly.
+- **Model names drift.** The current name is whatever the CLI uses (`gpt-5.6-luna` at the time of writing); a rename is a one-line routing.json edit.
+- **No login yet?** Requests return a 503 with a `run: codex login` hint, plus a serve-start warning — deliberately no fallback: a missing login is a config error best fixed immediately, and silently serving it from a paid pro would hide both the error and the bill.
 
-The sentinel only loads in the `openai-responses` group — the ChatGPT Codex backend speaks the Responses protocol, so it can't sit in `anthropic`/`openai-chat` profiles.
+The sentinel only loads in the `openai-responses` group — the ChatGPT Codex backend speaks the Responses protocol.
 
 ### Claude account (subscription login)
 
-`"auth": "claude"` in the `anthropic` group routes through a Claude Pro/Max subscription login that awerouter itself owns — no local Claude Code CLI login is needed or used (`awerouter login claude` runs the same PKCE device flow the CLI uses; tokens live in `~/.config/awerouter/claude-auth.json`, mode 0600). The subscription's own models mix into flash/pro routing next to key-based providers:
+`"auth": "claude"` in the `anthropic` group routes through a Claude Pro/Max subscription login that awerouter itself owns (`awerouter login claude` runs the same authorization flow the CLI uses; tokens live in `~/.config/awerouter/claude-auth.json`, mode 0600) — the local Claude Code CLI login is never used. The subscription's own models mix into flash/pro routing next to key-based providers:
 
 ```json
 "anthropic": {
@@ -262,12 +265,12 @@ awerouter login claude    # opens the browser; paste the code shown on the callb
 awerouter logout claude   # removes the stored login
 ```
 
-Point any Anthropic-protocol client at awerouter with a dummy key (Claude Code via `ANTHROPIC_BASE_URL` — the CLI's own login is never touched; each OAuth login is an independent session). The real `Authorization: Bearer <access_token>` plus the OAuth-required `anthropic-beta: oauth-2025-04-20` flag are injected per request; no body normalization is needed. How it behaves:
+Point any Anthropic-protocol client at awerouter with a dummy key (Claude Code via `ANTHROPIC_BASE_URL` — the CLI's own login is never touched); auth headers and the OAuth flag are injected per request, with no body rewriting. How it behaves:
 
-- **awerouter owns refresh.** The inverse of codex's read-only design: this login belongs to awerouter, so it refreshes — access tokens are short-lived (~hours) and renewed with the rotating refresh token, the new one persisted atomically before the request proceeds. An in-process lock plus a re-read under it keep concurrent requests from racing the refresh; a second awerouter process winning the race is recovered the same way (refresh rejected + file changed underneath → the winner's token is used).
-- **401 handling mirrors codex.** An upstream 401 forces one refresh and retries the same destination; a 401 that survives means the login is dead — flash requests fall back to a keyed pro destination (one printed line per fallback, `401-retry` marker in `usage log`), surfacing the 401 only when pro rides the same claude login. A missing login is a 503 with a `run: awerouter login claude` hint and a serve-start warning — same deliberate no-fallback reasoning as codex.
-- **Proxy-aware** like codex providers (`https_proxy`/`all_proxy`) — api.anthropic.com and platform.claude.com often need the shell proxy.
-- **Wire contract drifts; ToS caveat.** The endpoints (client id, `platform.claude.com` authorize/token, with legacy `console.anthropic.com` as a 404/405 fallback) and the header set are the reverse-engineered public contract shared by every community client — they can break without notice. And per Anthropic's 2026 policy, third-party use of subscription OAuth tokens is ToS-restricted: this rides your own subscription, at your own risk.
+- **awerouter owns refresh.** The inverse of codex: this login belongs to awerouter, so it renews automatically with the refresh token, persisting the new one before the request proceeds.
+- **Dead login.** A 401 forces one refresh and retry; a 401 that survives means flash falls back to a keyed pro. A missing login is a 503 with a `run: awerouter login claude` hint — same deliberate no-fallback as codex.
+- **Proxy-aware**, like codex — api.anthropic.com often needs the proxy.
+- **ToS caveat.** The endpoints and header set are the reverse-engineered public contract shared by community clients — they can break without notice; and per Anthropic's 2026 policy, third-party use of subscription OAuth tokens is ToS-restricted. This rides your own subscription, at your own risk.
 
 The sentinel only loads in the `anthropic` group — the subscription backend speaks the Messages protocol.
 
@@ -315,7 +318,7 @@ awerouter init step-glm      # needs STEPFUN_AUTH_TOKEN and GLM_API_KEY
 awerouter init glm-codex     # needs GLM_API_KEY, plus a ChatGPT subscription via codex login
 ```
 
-**step-glm-mm** — the multimodal sidekick, no smart split: a non-multimodal flagship (GLM 5.3 on the coding plan) does all the work, and only image-bearing requests go to a multimodal flash (StepFun step-3.7-flash). Same vendors as step-glm; the settings do the inverting. Dual-protocol (`["anthropic", "openai-chat"]`): one serve instance takes Claude Code *and* openai-chat agents on the same port — each protocol rides its own provider entry:
+**step-glm-mm** — a flagship with a pair of eyes: glm-5.3 does all the text work, while image-bearing requests go to the multimodal step-3.7-flash, which looks and reports back; with the template's `imageBridge` on, the follow-up text turns return to glm-5.3 carrying flash's transcriptions of those images. Dual-protocol (`["anthropic", "openai-chat"]`): one port takes Claude Code and openai-chat agents alike — each protocol rides its own provider entry:
 
 ```json
 "anthropic": {
@@ -329,13 +332,6 @@ awerouter init glm-codex     # needs GLM_API_KEY, plus a ChatGPT subscription vi
 ```
 
 ```json
-"settings": {
-  "imageModel": "flash",
-  "defaultModel": "pro"
-}
-```
-
-```json
 "cc-router-1": {
   "protocol": ["anthropic", "openai-chat"],
   "destinations": {
@@ -345,17 +341,27 @@ awerouter init glm-codex     # needs GLM_API_KEY, plus a ChatGPT subscription vi
 }
 ```
 
+```json
+"settings": {
+  "imageModel": "flash",
+  "defaultModel": "pro",
+  "imageBridge": true
+}
+```
+
 ```bash
 awerouter init step-glm-mm        # needs STEPFUN_AUTH_TOKEN and GLM_API_KEY
 # Claude Code:    export ANTHROPIC_BASE_URL=http://127.0.0.1:20128        (no /v1)
 # openai-chat:    export OPENAI_BASE_URL=http://127.0.0.1:20128/v1       (with /v1)
 ```
 
-`imageModel: flash` moves the image guard to the multimodal model (it outranks tier labels and long context — a request pro cannot see must never reach pro); `defaultModel: pro` flips the cost-first fall-through, so everything text goes to the flagship. Background-tier tasks still ride flash. Prefer a single vendor? Point flash at GLM's own multimodal `glm-5.3-flash` (`https://open.bigmodel.cn/api/v1`) instead of StepFun — one line in each protocol group.
+> **Don't need smart routing — just want your flagship to see images?** Those two settings are the whole trick: `imageModel: "flash"` sends image-bearing requests to the multimodal model, `defaultModel: "pro"` sends everything else to the flagship. Copy the two lines into any existing config; you don't need the full template. GLM-only shop? Swap flash for GLM's own `glm-5.3-flash`. Add `"imageBridge": true` to let follow-up text turns go back to the flagship carrying flash's transcriptions of the earlier images (see "Image bridge").
 
 Backend model names drift (see the Codex account section) — renaming is a one-line change in routing.json.
 
-**routing.json** — strategy, no secrets (safe to commit):
+### routing.json
+
+Strategy, no secrets (safe to commit):
 
 ```json
 {
@@ -408,6 +414,7 @@ Settings keys, their defaults, and what each one steers (all of them settable gl
 | `imageModel` | `flash` / `pro` | `pro` | L1: destination for image-bearing requests (the capability guard — outranks tiers and length) |
 | `defaultModel` | `flash` / `pro` | `flash` | fall-through destination when no layer matches |
 | `searchResultDiscount` | number 0–1 | `0.3` | L3: weight of file-search (Grep/Glob/LS) result tokens; `1` = off |
+| `imageBridge` | `true` / `false` | `false` | flash transcribes history images to text, so a text-only pro keeps the session (opt-in; see "Image bridge") |
 | `toolRouting.webSearch` | `flash` / `pro` / `null` | `null` | overrides `webSearchModel` for the web_search guard |
 | `toolRouting.edit` | `flash` / `pro` / `null` | `pro` | L4: destination for the turn after code changed; `null` disables the checkpoint |
 | `longContextAuto.percentile` | 1–99 | `95` | which percentile of the L3 distribution becomes the `"auto"` threshold |
@@ -431,16 +438,20 @@ First-match-wins pipeline, evaluated per request:
 
 | Layer | Signal | Decision |
 |-------|--------|----------|
-| L1 Capability | `web_search` tool in body; image content present | `toolRouting.webSearch` (default **pro**; legacy `webSearchModel` still works); `settings.imageModel` (default **pro**) |
+| L1 Capability | `web_search` tool in body; image content present | `toolRouting.webSearch` (default **pro**; legacy `webSearchModel` still works); `settings.imageModel` (default **pro**; with `imageBridge` on, only *fresh* images route here — bridged history falls through to `defaultModel`) |
 | L2 Tier label | `model == c1/flash` or `c1/think` | flash / pro respectively |
 | L3 Difficulty | token count (all request content) > threshold | **pro**; else fall through |
 | L4 Edit checkpoint | trailing tool batch changed code (`edit`/`write`/`apply_patch`/...) | `toolRouting.edit` (default **pro**, `null` disables) |
 
 CC's `/model` picker sets the tier model id (c1/flash / c1/pro / c1/think). awerouter reads it and routes accordingly — no keyword parsing, no LLM classifier. The image guard is a capability rule, not a difficulty guess: it sits above tier labels and long context, so with `imageModel: flash` an image-bearing request reaches the multimodal model no matter what tier it carries or how long it is (a model that cannot see images must never get them). Everything that matches no layer falls through to `settings.defaultModel` (default flash — cost-first).
 
-L4 is a consequence checkpoint, not a difficulty guess. Structure cannot see the turn that *decides* an edit — that turn routes by whatever came before it — but the turn right *after* code changed is the review turn (verify, continue, report), so it goes to pro: flash drafts, pro reviews. The signal is the **trailing parallel batch** of tool calls: any edit-class call in it marks the batch (`[Grep, Edit]` and `[Edit, Grep]` route identically). Shell-wrapped calls (codex `exec_command`/`shell`) are classified by their command text — `apply_patch` counts as edit. L4 sits below L3 on purpose — a session already above `longContextThreshold` stays pro no matter what tool just ran, so flash never sees contexts it may degrade on and the long-context crossing stays one-way flash→pro (below the threshold, edit-checkpoint turns go pro and later turns return to flash). Edit-class covers `Edit`/`Write`/`NotebookEdit`/`apply_patch`/`replace_in_file` and friends, matched case-insensitively. Earlier versions also routed search/mechanical phases to flash here; since flash is already the fall-through default, those rules changed nothing and were removed (v0.4.8).
+L4 is a consequence checkpoint, not a difficulty guess: the turn right *after* code changed is the review turn (verify, continue, report), so it goes to pro — flash drafts, pro reviews. The signal is the trailing parallel tool batch; any edit-class call in it marks the batch (`Edit`/`Write`/`NotebookEdit`/`apply_patch` etc., case-insensitive; shell-wrapped calls classified by command text). L4 sits below L3 on purpose: sessions above `longContextThreshold` stay pro, keeping the long-context crossing one-way flash→pro.
 
 All tool-keyed rules live in one block — `settings.toolRouting` (`webSearch`/`edit`) — and the serve banner prints the active mapping on one `tool -> ...` line.
+
+## Image Bridge
+
+`settings.imageBridge: true` (opt-in; the step-glm-mm template turns it on) gives a text-only pro model a second-hand pair of eyes. When a request carries images only in *history* — the final message is text — awerouter first has the multimodal flash destination (`imageModel`) transcribe each distinct image once, then replaces the image blocks with the transcription text before routing, so the session falls through to `defaultModel` (pro) instead of being pinned to flash forever. A fresh upload this turn still routes to flash natively, and `/v1/messages/count_tokens` sees the same rewritten body, so estimates match what is sent. Transcriptions are cached by image content for the process lifetime (a restart re-transcribes each image once); if any caption call fails, the request keeps its original images and the L1 image guard routes it as before. Codex subscription logins skip the bridge (their SSE-only backend cannot serve a non-streaming caption call).
 
 ## Token Saver (RTK)
 

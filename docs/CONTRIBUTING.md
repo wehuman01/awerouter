@@ -64,7 +64,7 @@ provider (flash: cheap/fast — pro: strong/accurate)
 Key design decisions:
 
 - **Context lives in the client.** Every request carries the full history; the router keeps no session state, so restarts are lossless and routing is decided per request.
-- **Four-layer first-match-wins routing.** L1/L2/L4 are exact signals; L3 is the only threshold-sensitive layer, tunable via `awerouter usage calibrate`. L4 routes the turn after an edit to pro — flash drafts, pro reviews.
+- **Four-layer first-match-wins routing.** L1/L2/L4 are exact signals; L3 is the only threshold-sensitive layer, tunable via `awerouter usage calibrate`. L4 routes the turn after an edit to pro — flash drafts, pro reviews. Any edit-class call in the trailing parallel tool batch marks the batch (order-insensitive: `[Grep, Edit]` ≡ `[Edit, Grep]`); shell-wrapped calls (codex `exec_command`/`shell`) are classified by command text. L4 sits below L3 so long contexts never fall back to flash. Earlier versions also routed search/mechanical phases to flash; since flash is already the fall-through default, those rules changed nothing and were removed (v0.4.8).
 - **Opaque response path.** The proxy streams response bytes through untouched. Anything that needs response parsing (e.g., output-token accounting) must justify breaking this property.
 - **Fallback only before the first byte.** Once streaming starts, a request is never re-attempted, so clients never see duplicated output.
 
@@ -80,6 +80,23 @@ Rules:
 - `config show`/`list` cross-validate destinations against providers, so bad references fail at load time.
 - Never print raw secret values; `config show` redacts literal keys.
 - One `serve` process serves exactly one profile.
+
+## Subscription Logins
+
+Two auth sentinels ride subscription logins instead of API keys: `"auth": "codex"` (only in `openai-responses`; reads `$CODEX_HOME/auth.json`, default `~/.codex/auth.json`) and `"auth": "claude"` (only in `anthropic`; awerouter's own login via `awerouter login claude` — the same PKCE device flow Claude Code uses, tokens in `~/.config/awerouter/claude-auth.json`, mode 0600). Each sentinel only loads in its own protocol group because its backend speaks exactly one wire protocol.
+
+Refresh ownership follows who owns the login:
+
+- **codex — read-only.** OpenAI refresh tokens are single-use and rotating; refreshing here would invalidate the CLI's login, so the CLI keeps sole ownership. awerouter re-reads `auth.json` on every request, and once more on an upstream 401 (the CLI usually refreshed it). Access tokens live ~10 days — keep using `codex` (or awewarm) and the login stays fresh.
+- **claude — owned by awerouter.** The inverse design: access tokens are short-lived (~hours) and renewed with the rotating refresh token, the new pair persisted atomically before the request proceeds. An in-process lock plus a re-read under it keep concurrent requests from racing the refresh; a second awerouter process winning the race is recovered the same way (refresh rejected + file changed underneath → use the winner's token).
+
+401 ladder (both sentinels): one forced refresh/re-read and retry of the same destination; a 401 that survives means the login is dead — flash requests fall back to a keyed pro destination (one printed line each, `401-retry` marker in `usage log`), and the 401 surfaces to the client only when pro rides the same login. A missing login is a 503 with a login hint (`run: codex login` / `run: awerouter login claude`) plus a serve-start warning — deliberately no fallback, unlike a mid-session expiry: a missing login is a config error, and silently serving it from a paid pro would hide both the error and the bill.
+
+codex/claude providers honor `https_proxy`/`all_proxy` (chatgpt.com, api.anthropic.com, and platform.claude.com often need the proxy); every other provider always connects directly.
+
+Codex-backend normalization: `store` is forced to `false` (zero-data-retention; `store: true` is rejected), `max_output_tokens` is dropped (rejected), and since the backend has no non-streaming mode, a non-streaming request goes upstream as SSE and comes back buffered into a single JSON response with output items rebuilt from the stream events. Claude needs no body normalization; per-request headers injected instead: `Authorization: Bearer <access_token>` plus `anthropic-beta: oauth-2025-04-20`.
+
+The Claude wire contract (client id, `platform.claude.com` authorize/token with legacy `console.anthropic.com` as a 404/405 fallback) is the reverse-engineered public contract shared by community clients — it can break without notice.
 
 ## Logging
 

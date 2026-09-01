@@ -454,6 +454,34 @@ class TestLoadRouting:
         with pytest.raises(SystemExit, match="longContextAuto"):
             load_routing()
 
+    def test_settings_image_bridge_true(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {"imageBridge": True},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        assert load_routing()[0].image_bridge is True
+
+    def test_settings_image_bridge_defaults_off(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        assert load_routing()[0].image_bridge is False
+
+    @pytest.mark.parametrize("bad", ["yes", 1, "true"])
+    def test_settings_image_bridge_non_bool_dies(self, tmp_path, monkeypatch, bad):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {"imageBridge": bad},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        with pytest.raises(SystemExit, match="'imageBridge'"):
+            load_routing()
+
     def test_settings_long_context_auto_not_object_dies(self, tmp_path, monkeypatch):
         monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
         _write_config(tmp_path, {}, {
@@ -683,6 +711,22 @@ class TestProfileSettings:
         assert profiles["plain"].settings.image_model == "pro"
         assert profiles["mm"].settings.image_model == "flash"
         assert profiles["mm"].settings.default_model == "pro"
+
+    def test_override_image_bridge(self, tmp_path, monkeypatch):
+        """A flat 'imageBridge' in the profile body overrides the global off."""
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {"imageBridge": False},
+            "plain": {"protocol": "anthropic", "longContextThreshold": 1,
+                      "destinations": {"flash": "p,m", "pro": "p,m"}},
+            "mm": {"protocol": "anthropic", "longContextThreshold": 1,
+                   "destinations": {"flash": "p,m", "pro": "p,m"},
+                   "imageBridge": True},
+        })
+        settings, profiles = load_routing()
+        assert settings.image_bridge is False        # global untouched
+        assert profiles["plain"].settings.image_bridge is False
+        assert profiles["mm"].settings.image_bridge is True
 
     def test_override_background_think_tier_labels(self, tmp_path, monkeypatch):
         """backgroundModel/thinkModel in a profile body parse as overrides —
@@ -1015,8 +1059,9 @@ class TestMergeConfig:
             "anthropic.glm", "openai-chat.stepfun", "openai-chat.glm"]
         assert report["providers_skipped"] == ["anthropic.stepfun"]
         assert report["profiles_added"] == ["cc-router-1"]
-        assert report["settings_added"] == ["imageModel", "defaultModel"]
-        assert set(report["behavior_shift"]) == {"imageModel=flash", "defaultModel=pro"}
+        assert report["settings_added"] == ["imageModel", "defaultModel", "imageBridge"]
+        assert set(report["behavior_shift"]) == {
+            "imageModel=flash", "defaultModel=pro", "imageBridge=True"}
         # existing entry keeps its own base_url/auth
         providers = json.loads((tmp_path / "providers.json").read_text())
         assert providers["anthropic"]["stepfun"]["auth"] == "${MINE}"
@@ -1059,7 +1104,7 @@ class TestMergeConfig:
                             "glm": {"base_url": "https://glm.internal/v4", "auth": "${GLM_MINE}"}},
         }, {
             "settings": {"imageModel": "pro", "defaultModel": "flash",
-                         "searchResultDiscount": 0.5},
+                         "searchResultDiscount": 0.5, "imageBridge": False},
             "cc-router-1": {"protocol": "anthropic", "longContextThreshold": 12345,
                             "destinations": {"flash": "stepfun,f", "pro": "glm,p"}},
         })

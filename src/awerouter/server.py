@@ -36,6 +36,15 @@ from awerouter.protocols import ENDPOINT_PATHS, extract
 from awerouter.router import resolve
 from awerouter.types import RequestLog, ResolveResult
 from awerouter.update_check import cached_update_hint
+from awerouter.vision import (
+    CAPTIONS,
+    build_caption_body,
+    cache_key,
+    collect_images,
+    image_key,
+    parse_caption_response,
+    replace_images,
+)
 
 
 # Per-request opt-out for rtk compression (value "off" disables it), so a
@@ -218,6 +227,75 @@ async def _proxy_request(
 
 
 # ---------------------------------------------------------------------------
+# Image bridge (opt-in): flash transcribes history images to text
+# ---------------------------------------------------------------------------
+
+CAPTION_TIMEOUT = aiohttp.ClientTimeout(connect=10, total=60)
+
+
+async def _caption_image(session, provider, model: str, protocol: str,
+                         image_part: dict) -> str:
+    """One non-streaming transcription call to the multimodal destination.
+
+    Raises on any failure — the caller falls back to the plain image route.
+    """
+    body = build_caption_body(protocol, model, image_part)
+    headers = {"content-type": "application/json"}
+    if protocol == "anthropic":
+        headers["anthropic-version"] = "2023-06-01"
+    await _set_auth(headers, provider, os.environ)
+    url = provider.base_url.rstrip("/") + ENDPOINT_PATHS[protocol]
+    async with session.post(url, json=body, headers=headers,
+                            timeout=CAPTION_TIMEOUT, allow_redirects=False) as up:
+        if up.status != 200:
+            raise RuntimeError(f"caption upstream status {up.status}")
+        data = await up.json(content_type=None)
+    caption = parse_caption_response(protocol, data)
+    if not caption:
+        raise RuntimeError("caption response carried no text")
+    return caption
+
+
+async def _bridge_images(request_id: str, session, body: dict, protocol: str,
+                         profile, providers: dict, settings) -> bool:
+    """Replace history images with flash transcriptions so a text-only pro
+    can continue the session. Returns True when the body was rewritten.
+
+    Fires only when the request carries images but NOT in the final message
+    (a fresh upload routes to the multimodal imageModel natively). Every
+    caption must succeed before any rewrite happens; on failure the body
+    stays untouched and the L1 image guard routes the request as before.
+    """
+    feat = extract(protocol, body)
+    if not (feat.has_image and not feat.has_new_image):
+        return False
+    dest = profile.destinations[settings.image_model]
+    provider = providers[dest.provider_name]
+    if provider.auth == AUTH_SENTINEL:
+        return False  # SSE-only codex backend cannot serve non-streaming captions
+
+    captions: dict = {}
+    for part in collect_images(body, protocol):
+        ihash = image_key(protocol, part)
+        caption = CAPTIONS.get(cache_key(provider.name, dest.model, ihash))
+        if caption is None:
+            t0 = time.monotonic()
+            try:
+                caption = await _caption_image(
+                    session, provider, dest.model, protocol, part)
+            except Exception as exc:  # any failure falls back to the image route
+                print(f"  bridge: caption failed ({exc}); {request_id} "
+                      f"keeps the image route -> {settings.image_model}")
+                return False
+            CAPTIONS.put(cache_key(provider.name, dest.model, ihash), caption)
+            print(f"  bridge: {dest.provider_name}/{dest.model} transcribed image "
+                  f"{ihash[:8]} in {time.monotonic() - t0:.1f}s")
+        captions[ihash] = caption
+    replace_images(body, protocol, dest.model, captions)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Request handlers
 # ---------------------------------------------------------------------------
 
@@ -321,6 +399,13 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
         total=None if is_stream else 120,
         sock_read=None if is_stream else 120,
     )
+
+    # Image bridge before rtk/routing: history images become flash
+    # transcriptions, so what rtk compresses and the router scores is
+    # exactly what goes upstream.
+    if settings.image_bridge:
+        await _bridge_images(request_id, session, body, endpoint_protocol,
+                             profile, providers, settings)
 
     # rtk compression before routing: L3 decisions, effective_tokens, and the
     # usage log then reflect what is actually sent (and billed) upstream.
@@ -553,6 +638,13 @@ async def handle_count_tokens(request: web.Request) -> web.Response:
     # must match what actually gets sent upstream.
     if _rtk_enabled(request, profile):
         rtk.compress_body(body, "anthropic")
+
+    # Image bridge here too, for the same reason: the token estimate must
+    # reflect the transcriptions that /v1/messages would actually send.
+    if settings.image_bridge:
+        rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+        await _bridge_images(rid, session, body, "anthropic",
+                             profile, providers, settings)
 
     # Resolve destination (same logic as messages)
     result = _resolve_for_request(body, profile, settings, "anthropic")
@@ -852,6 +944,10 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
         print(f"  port          -> {profile.port} (from routing.json; --port overrides)")
     if profile.rtk:
         print(f"  rtk           -> on (tool-result compression)")
+    if settings.image_bridge:
+        bd = profile.destinations[settings.image_model]
+        print(f"  image bridge  -> on ({bd.provider_name}/{bd.model} transcribes "
+              f"history images to text)")
     print(f"  bg            -> {settings.background_model}  "
           f"think -> {settings.think_model}  "
           f"main -> {'auto' if settings.default_model == 'flash' else settings.default_model}")

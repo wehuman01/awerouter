@@ -1,7 +1,8 @@
 {
   "settings": {
     "imageModel": "flash",
-    "defaultModel": "pro"
+    "defaultModel": "pro",
+    "imageBridge": true
   },
   "cc-router-1": {
     "protocol": ["anthropic", "openai-chat"],

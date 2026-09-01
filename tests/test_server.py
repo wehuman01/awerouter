@@ -1504,3 +1504,266 @@ class TestRtk:
         asyncio.run(t())
         out = capsys.readouterr().out
         assert "rtk" in out and "tool-result compression" in out
+
+
+class TestImageBridge:
+    """imageBridge: flash transcribes history images; pro continues the
+    session over pure text. A fresh upload still routes to flash natively."""
+
+    IMG = {"type": "image", "source": {
+        "type": "base64", "media_type": "image/png", "data": "aW1nMQ=="}}
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        from awerouter.vision import CAPTIONS
+        CAPTIONS._data.clear()
+
+    def _settings(self):
+        return Settings(image_model="flash", default_model="pro", image_bridge=True)
+
+    def _profile(self):
+        return RoutingProfile("mm", "anthropic", 32000, {
+            "flash": Destination("stepfun", "sf-flash"),
+            "pro": Destination("anthropic", "opus-pro"),
+        })
+
+    @staticmethod
+    def _is_caption(body):
+        sys = body.get("system")
+        return isinstance(sys, str) and "transcribe" in sys.lower()
+
+    def test_new_upload_goes_to_flash_natively(self):
+        calls = []
+
+        async def t():
+            async def up(request):
+                body = await request.json()
+                calls.append(body)
+                return web.json_response({"model": body["model"]})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                app = create_app(_providers(up_server.port), self._profile(),
+                                 self._settings())
+                async with TestClient(TestServer(app)) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "auto",
+                        "messages": [{"role": "user", "content": [
+                            self.IMG, {"type": "text", "text": "what is this"}]}],
+                    })
+                    assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        assert len(calls) == 1          # no caption call for a fresh upload
+        assert calls[0]["model"] == "sf-flash"
+
+    def test_followup_bridges_to_pro(self):
+        calls = []
+
+        async def t():
+            async def up(request):
+                body = await request.json()
+                calls.append(body)
+                if self._is_caption(body):
+                    return web.json_response({"content": [
+                        {"type": "text", "text": "screenshot: red test failure"}]})
+                return web.json_response({"model": body["model"]})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                app = create_app(_providers(up_server.port), self._profile(),
+                                 self._settings())
+                async with TestClient(TestServer(app)) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "auto",
+                        "messages": [
+                            {"role": "user", "content": [self.IMG]},
+                            {"role": "assistant", "content": "ok"},
+                            {"role": "user", "content": "what did you see"},
+                        ],
+                    })
+                    assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        assert len(calls) == 2                       # one caption, one main call
+        assert self._is_caption(calls[0])
+        assert calls[0]["model"] == "sf-flash"
+        main = calls[1]
+        assert main["model"] == "opus-pro"           # pro took over the session
+        first_content = main["messages"][0]["content"]
+        assert all(p["type"] != "image" for p in first_content)
+        assert "transcribed by sf-flash" in first_content[0]["text"]
+        assert "screenshot: red test failure" in first_content[0]["text"]
+
+    def test_caption_cached_across_requests(self):
+        calls = []
+
+        async def t():
+            async def up(request):
+                body = await request.json()
+                calls.append(body)
+                if self._is_caption(body):
+                    return web.json_response({"content": [
+                        {"type": "text", "text": "screenshot: red test failure"}]})
+                return web.json_response({"model": body["model"]})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                app = create_app(_providers(up_server.port), self._profile(),
+                                 self._settings())
+                followup = {
+                    "model": "auto",
+                    "messages": [
+                        {"role": "user", "content": [self.IMG]},
+                        {"role": "assistant", "content": "ok"},
+                        {"role": "user", "content": "what did you see"},
+                    ],
+                }
+                async with TestClient(TestServer(app)) as c:
+                    for _ in range(2):
+                        r = await c.post("/v1/messages", json=followup)
+                        assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        captions = [b for b in calls if self._is_caption(b)]
+        mains = [b for b in calls if not self._is_caption(b)]
+        assert len(captions) == 1                     # each image transcribed once
+        assert len(mains) == 2
+        assert all(b["model"] == "opus-pro" for b in mains)
+
+    def test_caption_failure_falls_back_to_flash(self):
+        calls = []
+
+        async def t():
+            async def up(request):
+                body = await request.json()
+                calls.append(body)
+                if self._is_caption(body):
+                    return web.json_response({"error": "captioner down"}, status=500)
+                return web.json_response({"model": body["model"]})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                app = create_app(_providers(up_server.port), self._profile(),
+                                 self._settings())
+                async with TestClient(TestServer(app)) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "auto",
+                        "messages": [
+                            {"role": "user", "content": [self.IMG]},
+                            {"role": "assistant", "content": "ok"},
+                            {"role": "user", "content": "what did you see"},
+                        ],
+                    })
+                    assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        main = calls[-1]
+        assert main["model"] == "sf-flash"            # image guard routed it
+        assert self.IMG in main["messages"][0]["content"]  # image kept verbatim
+
+    def test_bridge_off_keeps_legacy_behavior(self):
+        calls = []
+
+        async def t():
+            async def up(request):
+                body = await request.json()
+                calls.append(body)
+                return web.json_response({"model": body["model"]})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                # the only delta from _settings(): the bridge flag off
+                settings = Settings(image_model="flash", default_model="pro")
+                app = create_app(_providers(up_server.port), self._profile(), settings)
+                async with TestClient(TestServer(app)) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "auto",
+                        "messages": [
+                            {"role": "user", "content": [self.IMG]},
+                            {"role": "assistant", "content": "ok"},
+                            {"role": "user", "content": "what did you see"},
+                        ],
+                    })
+                    assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        assert len(calls) == 1                          # no caption without the flag
+        assert calls[0]["model"] == "sf-flash"          # legacy image route
+
+    def test_count_tokens_bridged_consistently(self):
+        """/v1/messages/count_tokens sees the same rewritten body the main
+        endpoint would send — the client's context estimate stays honest."""
+        calls = []
+
+        async def t():
+            async def caption_up(request):
+                calls.append(await request.json())
+                return web.json_response({"content": [
+                    {"type": "text", "text": "screenshot: red test failure"}]})
+
+            async def count_up(request):
+                body = await request.json()
+                calls.append(body)
+                return web.json_response({"token_count": 5})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", caption_up)
+            up_app.router.add_post("/v1/messages/count_tokens", count_up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                app = create_app(_providers(up_server.port), self._profile(),
+                                 self._settings())
+                async with TestClient(TestServer(app)) as c:
+                    r = await c.post("/v1/messages/count_tokens", json={
+                        "model": "auto",
+                        "messages": [
+                            {"role": "user", "content": [self.IMG]},
+                            {"role": "assistant", "content": "ok"},
+                            {"role": "user", "content": "what did you see"},
+                        ],
+                    })
+                    assert r.status == 200
+                    assert (await r.json())["token_count"] == 5
+            finally:
+                await up_server.close()
+        run(t())
+        assert self._is_caption(calls[0])               # flash transcribed the image
+        counted = calls[1]
+        assert counted["model"] == "opus-pro"           # estimate for the pro route
+        first_content = counted["messages"][0]["content"]
+        assert all(p["type"] != "image" for p in first_content)
+        assert "screenshot: red test failure" in first_content[0]["text"]
+
+    def test_serve_banner_mentions_image_bridge(self, capsys):
+        async def t():
+            task = asyncio.ensure_future(
+                _serve("127.0.0.1", 0, _providers(0), self._profile(),
+                       self._settings(), True))
+            await asyncio.sleep(0.5)
+            task.cancel()
+            await task
+        asyncio.run(t())
+        out = capsys.readouterr().out
+        assert "image bridge" in out and "sf-flash" in out
