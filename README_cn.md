@@ -134,7 +134,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 # aweswitch profile 环境变量：ANTHROPIC_MODEL=auto, _HAIKU_=flash, _OPUS_=pro
 ```
 
-内置模板源码位于 [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/)；`awerouter init <template>` 会将对应文件生成到你的配置目录。
+内置模板源码位于 [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/)；`awerouter init <template>` 会将对应文件生成到你的配置目录。已经有配置了？`awerouter init <template> --merge` 把模板里缺的 provider、profile 和 settings 补进现有配置——已有条目一律不覆盖，profile 重名则跳过，新写入的 `imageModel`/`defaultModel` 会打印警告（它们会改变所有 profile 的路由行为）。
 
 ## 配置
 
@@ -273,7 +273,7 @@ awerouter logout claude   # 删除本地登录
 
 ### 常见搭配模版
 
-`awerouter init` 支持内置模板名，一次生成配套的 `providers.json` + `routing.json`（不传名字即 `default`）。下面三套开箱即用；不想跑命令的话，手抄任意一段到自己的配置里也一样。密钥一律 `${ENV_VAR}` 占位，缺失的环境变量在启动时报错。
+`awerouter init` 支持内置模板名，一次生成配套的 `providers.json` + `routing.json`（不传名字即 `default`）。下面三套开箱即用；不想跑命令的话，手抄任意一段到自己的配置里也一样。密钥一律 `${ENV_VAR}` 占位，缺失的环境变量在启动时报错。想把模板并进已有配置，加 `--merge`：只补缺失项，已有的内容一律不碰。
 
 **step-glm** —— 纯 API key 的国产双档：flash 走 StepFun step_plan，pro 走 GLM coding plan。面向说 openai-chat 协议的 agent：
 
@@ -438,7 +438,7 @@ L4 是后果检查点，不是难度猜测。结构信号看不到*决定*编辑
 ## 命令
 
 ```bash
-awerouter init [TEMPLATE]             # 从内置模板创建配置（default / step-glm / glm-codex / step-glm-mm）
+awerouter init [TEMPLATE]             # 从内置模板创建配置（default / step-glm / glm-codex / step-glm-mm）；--merge 把模板补进已有配置
 awerouter add                         # 交互式添加 profile（先选类别再选 provider）
 awerouter list                        # 列出 profile（名字、协议、端口、flash、pro、阈值）
 awerouter serve [PROFILE] [--port N] [--host 127.0.0.1]  # 端口优先级：--port > profile 'port' > 20128

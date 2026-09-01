@@ -156,6 +156,37 @@ class TestInit:
         assert "unknown template 'nope'" in r.output
         assert "step-glm" in r.output
 
+    def test_init_merge_into_existing(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        r = CliRunner().invoke(cli, ["init", "step-glm-mm", "--merge"])
+        assert r.exit_code == 0, r.output
+        assert "providers added: anthropic.glm, openai-chat.stepfun, openai-chat.glm" in r.output
+        assert "profiles added: cc-router-1" in r.output
+        assert "settings added: imageModel, defaultModel" in r.output
+        assert "skipped (already present): anthropic.stepfun" in r.output
+        assert "warning: newly set in settings: imageModel=flash, defaultModel=pro" in r.output
+        assert "awerouter restore routing" in r.output
+        settings, profiles = load_routing()
+        assert settings.image_model == "flash"
+        assert settings.default_model == "pro"
+        assert profiles["cc-router-1"].protocols == ("anthropic", "openai-chat")
+        assert set(profiles) == {"cc-1", "cc-2", "cc-router-1"}
+
+    def test_init_merge_second_run_is_no_op(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        CliRunner().invoke(cli, ["init", "step-glm-mm", "--merge"])
+        r = CliRunner().invoke(cli, ["init", "step-glm-mm", "--merge"])
+        assert r.exit_code == 0
+        assert "nothing to merge; config already covers this template" in r.output
+
+    def test_init_merge_on_missing_config_creates(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch)
+        r = CliRunner().invoke(cli, ["init", "step-glm-mm", "--merge"])
+        assert r.exit_code == 0, r.output
+        assert "template: step-glm-mm" in r.output
+        assert (tmp_path / "providers.json").exists()
+        assert (tmp_path / "routing.json").exists()
+
 
 class TestList:
     def test_lists_profiles(self, tmp_path, monkeypatch):

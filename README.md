@@ -134,7 +134,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 # aweswitch profile env: ANTHROPIC_MODEL=auto, _HAIKU_=flash, _OPUS_=pro
 ```
 
-The bundled template source is [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/); `awerouter init <template>` generates its matching files in your configuration directory.
+The bundled template source is [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/); `awerouter init <template>` generates its matching files in your configuration directory. Already have a config? `awerouter init <template> --merge` adds the template's missing providers, profiles, and settings to it — existing entries are never overwritten, profile id collisions are skipped, and newly-set `imageModel`/`defaultModel` print a warning since they re-route every profile.
 
 ## Config
 
@@ -273,7 +273,7 @@ The sentinel only loads in the `anthropic` group — the subscription backend sp
 
 ### Common setup templates
 
-`awerouter init` takes an optional bundled template name and generates a matching `providers.json` + `routing.json` pair in one shot (no name: `default`). Three ready-made combos ship out of the box; hand-copying any snippet below into your own config works just as well. Keys are `${ENV_VAR}` placeholders — a missing env var dies at startup with a clear message.
+`awerouter init` takes an optional bundled template name and generates a matching `providers.json` + `routing.json` pair in one shot (no name: `default`). Three ready-made combos ship out of the box; hand-copying any snippet below into your own config works just as well. Keys are `${ENV_VAR}` placeholders — a missing env var dies at startup with a clear message. To fold a template into an existing config instead, append `--merge`: it fills in only what is missing and never touches what you already have.
 
 **step-glm** — key-only Chinese two-tier combo: flash on StepFun step_plan, pro on the GLM coding plan. For agents speaking the openai-chat protocol:
 
@@ -438,7 +438,7 @@ Compression is inspired by [rtk](https://github.com/rtk-ai/rtk) (Apache 2.0) and
 ## Commands
 
 ```bash
-awerouter init [TEMPLATE]             # create config from a bundled template (default / step-glm / glm-codex / step-glm-mm)
+awerouter init [TEMPLATE]             # create config from a bundled template (default / step-glm / glm-codex / step-glm-mm); --merge fills it into an existing config
 awerouter add                         # interactively add a profile (pick category and providers)
 awerouter list                        # list profiles (name, protocol, port, flash, pro, threshold)
 awerouter serve [PROFILE] [--port N] [--host 127.0.0.1]  # port: --port > profile 'port' > 20128

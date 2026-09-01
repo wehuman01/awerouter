@@ -145,6 +145,7 @@ Replace `<skill-directory>` with the path from step B1.
 
 ```bash
 awerouter init            # or pick a bundled combo: awerouter init step-glm / glm-codex / step-glm-mm
+awerouter init <template> --merge   # config already exists? add the template's missing providers/profiles/settings without overwriting anything
 ```
 
 This creates config files in `~/.config/awerouter/` from a bundled template:

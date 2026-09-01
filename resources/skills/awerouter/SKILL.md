@@ -31,7 +31,7 @@ Main config files:
 ## Safe Commands
 
 You may run these read-only or non-interactive commands:
-- `awerouter init [TEMPLATE]`
+- `awerouter init [TEMPLATE] [--merge]`
 - `awerouter config path`
 - `awerouter config show [PROFILE]`
 - `awerouter config edit`
@@ -137,9 +137,10 @@ awerouter init                    # 'default' template
 awerouter init step-glm           # key-only combo: flash=StepFun step_plan, pro=GLM coding plan
 awerouter init glm-codex          # flash=GLM coding plan, pro=ChatGPT subscription (auth: "codex")
 awerouter init step-glm-mm        # multimodal sidekick, dual-protocol (anthropic+openai-chat on one port): pro=GLM glm-5.3 does everything, flash=StepFun step-3.7-flash takes images only
+awerouter init step-glm-mm --merge  # add a template to an EXISTING config: fills missing providers/profiles/settings, never overwrites (warns when imageModel/defaultModel are newly set)
 ```
 
-Templates are `<name>.providers.json` + `<name>.routing.json` pairs; an unknown name fails with the list of available ones. This creates `providers.json` and `routing.json` if missing.
+Templates are `<name>.providers.json` + `<name>.routing.json` pairs; an unknown name fails with the list of available ones. This creates `providers.json` and `routing.json` if missing. With `--merge` on an existing config, only missing entries are added (skipped: providers/profiles already present, settings keys already set) and the merged config is validated before the command finishes.
 
 ### Inspect current config
 

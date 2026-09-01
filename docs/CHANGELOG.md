@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `awerouter init <template> --merge` folds a bundled template into an existing config: missing provider entries, profiles, and settings keys are filled in; existing entries always win (your `base_url`/`auth`, your profile bodies, your explicitly-set settings). Profile id collisions are skipped and reported, so merging is idempotent. Newly-written `imageModel`/`defaultModel` — global keys that re-route every existing profile — print a warning with an `awerouter restore` hint. Both files are snapshotted to `.bak` before writing and the merged config is load-validated before `init` reports done.
+
 ## v0.5.2
 
 Multimodal sidekicks and multi-protocol profiles: image routing and the fall-through default become settings, enabling a pro-first profile where a non-multimodal flagship (GLM 5.3) does all the work and a multimodal flash (StepFun step-3.7-flash) takes only image-bearing requests — the new `step-glm-mm` template. A profile's `protocol` now also accepts a list, so one serve instance can speak several wire protocols on a single port.

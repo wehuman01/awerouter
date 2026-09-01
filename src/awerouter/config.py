@@ -453,18 +453,97 @@ def available_templates() -> list[str]:
     return sorted(names)
 
 
-def init_config(template: str = "default") -> None:
-    d = config_dir()
-    if providers_path().exists() or routing_path().exists():
-        die(f"config already exists in {d}")
-    d.mkdir(parents=True, exist_ok=True)
+def _template_paths(template: str) -> tuple[Path, Path]:
     src_providers = TEMPLATE_DIR / f"{template}.providers.json"
     src_routing = TEMPLATE_DIR / f"{template}.routing.json"
     if not src_providers.exists() or not src_routing.exists():
         avail = ", ".join(available_templates()) or "(none)"
         die(f"unknown template '{template}'; available: {avail}")
+    return src_providers, src_routing
+
+
+def init_config(template: str = "default") -> None:
+    d = config_dir()
+    if providers_path().exists() or routing_path().exists():
+        die(f"config already exists in {d}")
+    d.mkdir(parents=True, exist_ok=True)
+    src_providers, src_routing = _template_paths(template)
     shutil.copy2(src_providers, providers_path())
     shutil.copy2(src_routing, routing_path())
+
+
+# Settings keys whose value re-routes every profile when it first appears:
+# the image guard (default pro) and the fall-through destination (default flash).
+_BEHAVIOR_SETTINGS_DEFAULTS = {"imageModel": "pro", "defaultModel": "flash"}
+
+
+def merge_config(template: str = "default") -> dict:
+    """Merge a bundled template into an existing config.
+
+    Fill-missing everywhere: provider entries and profiles are added only when
+    their key is absent, settings keys only when unset — an existing entry is
+    never overwritten. Returns a report of what was added/skipped; keys that
+    shift routing for all existing profiles are flagged in behavior_shift.
+    """
+    src_providers, src_routing = _template_paths(template)
+    t_providers = json.loads(src_providers.read_text(encoding="utf-8"))
+    t_routing = json.loads(src_routing.read_text(encoding="utf-8"))
+
+    report = {
+        "providers_added": [], "providers_skipped": [],
+        "profiles_added": [], "profiles_skipped": [],
+        "settings_added": [], "behavior_shift": [],
+    }
+
+    # Parse and merge both files in memory first, so a config error dies
+    # before anything is written — no half-applied merges.
+    p_path = providers_path()
+    p_data = _load_json(p_path, "providers.json")
+    p_changed = False
+    for protocol, group in t_providers.items():
+        existing = p_data.setdefault(protocol, {})
+        for name, entry in group.items():
+            if name in existing:
+                report["providers_skipped"].append(f"{protocol}.{name}")
+            else:
+                existing[name] = entry
+                report["providers_added"].append(f"{protocol}.{name}")
+                p_changed = True
+
+    r_path = routing_path()
+    r_data = _load_json(r_path, "routing.json")
+    r_changed = False
+    settings = r_data.setdefault("settings", {})
+    if not isinstance(settings, dict):
+        die("routing.json 'settings' must be an object")
+    for key, value in t_routing.get("settings", {}).items():
+        if key in settings:
+            continue
+        settings[key] = value
+        report["settings_added"].append(key)
+        if _BEHAVIOR_SETTINGS_DEFAULTS.get(key, value) != value:
+            report["behavior_shift"].append(f"{key}={value}")
+        r_changed = True
+    for name, body in t_routing.items():
+        if name == "settings":
+            continue
+        if name in r_data:
+            report["profiles_skipped"].append(name)
+        else:
+            r_data[name] = body
+            report["profiles_added"].append(name)
+            r_changed = True
+
+    if p_changed:
+        backup_file(p_path)
+        p_path.write_text(json.dumps(p_data, indent=2) + "\n")
+    if r_changed:
+        backup_file(r_path)
+        r_path.write_text(json.dumps(r_data, indent=2) + "\n")
+
+    # Fail loudly rather than leave behind a config that serve rejects.
+    validate_profiles(load_providers(), load_routing()[1])
+    return report
 
 
 def save_provider(protocol: str, name: str, base_url: str, auth: "str | None") -> None:
@@ -729,12 +808,40 @@ def config_edit_cmd(file):
         os.execvp(editor, [editor, str(target)])
 
 
+def _echo_merge_report(report: dict) -> None:
+    if not (report["providers_added"] or report["profiles_added"] or report["settings_added"]):
+        click.echo("nothing to merge; config already covers this template")
+        return
+    if report["providers_added"]:
+        click.echo(f"providers added: {', '.join(report['providers_added'])}")
+    if report["profiles_added"]:
+        click.echo(f"profiles added: {', '.join(report['profiles_added'])}")
+    if report["settings_added"]:
+        click.echo(f"settings added: {', '.join(report['settings_added'])}")
+    skipped = report["providers_skipped"] + report["profiles_skipped"]
+    if skipped:
+        click.echo(f"skipped (already present): {', '.join(skipped)}")
+    if report["behavior_shift"]:
+        click.echo()
+        click.echo(
+            "warning: newly set in settings: " + ", ".join(report["behavior_shift"])
+            + " — global keys that re-route image/fall-through behavior for every"
+            " existing profile. Undo with: awerouter restore routing"
+        )
+
+
 @cli.command("init")
 @click.argument("template", required=False, default="default")
-def init_cmd(template):
+@click.option("--merge", is_flag=True, default=False,
+              help="Add a template's providers/profiles/settings to an existing config "
+                   "(fill-missing; existing entries are never overwritten).")
+def init_cmd(template, merge):
     """Create config from a bundled template (no argument: 'default')."""
-    init_config(template)
     click.echo(f"template: {template}")
+    if merge and (providers_path().exists() or routing_path().exists()):
+        _echo_merge_report(merge_config(template))
+    else:
+        init_config(template)
     click.echo(config_dir())
 
 

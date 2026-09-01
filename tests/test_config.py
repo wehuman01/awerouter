@@ -18,6 +18,7 @@ from awerouter.config import (
     load_for_profile,
     load_providers,
     load_routing,
+    merge_config,
     redact,
     save_provider,
     validate_profiles,
@@ -818,6 +819,118 @@ class TestInitConfig:
         providers_all = load_providers()
         _, profiles = load_routing()
         validate_profiles(providers_all, profiles)
+
+
+class TestMergeConfig:
+    def _seed_minimal(self, tmp_path, monkeypatch):
+        """One provider, one profile, no settings — everything the template
+        carries is missing, so a merge should add all of it."""
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {
+            "anthropic": {"stepfun": {"base_url": "https://api.stepfun.com/step_plan",
+                                      "auth": "${MINE}"}},
+        }, {
+            "mine": {"protocol": "anthropic", "longContextThreshold": 8000,
+                     "destinations": {"flash": "stepfun,f", "pro": "stepfun,p"}},
+        })
+
+    def test_fill_missing_providers_settings_profiles(self, tmp_path, monkeypatch):
+        self._seed_minimal(tmp_path, monkeypatch)
+        report = merge_config("step-glm-mm")
+        assert report["providers_added"] == [
+            "anthropic.glm", "openai-chat.stepfun", "openai-chat.glm"]
+        assert report["providers_skipped"] == ["anthropic.stepfun"]
+        assert report["profiles_added"] == ["cc-router-1"]
+        assert report["settings_added"] == ["imageModel", "defaultModel"]
+        assert set(report["behavior_shift"]) == {"imageModel=flash", "defaultModel=pro"}
+        # existing entry keeps its own base_url/auth
+        providers = json.loads((tmp_path / "providers.json").read_text())
+        assert providers["anthropic"]["stepfun"]["auth"] == "${MINE}"
+        assert providers["anthropic"]["glm"]["base_url"] == "https://open.bigmodel.cn/api/anthropic"
+        # merged config loads clean and the new profile serves both protocols
+        settings, profiles = load_routing()
+        assert settings.image_model == "flash"
+        assert settings.default_model == "pro"
+        assert profiles["cc-router-1"].protocols == ("anthropic", "openai-chat")
+        assert "mine" in profiles
+
+    def test_no_op_merge_writes_nothing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        init_config("step-glm-mm")
+        before_p = (tmp_path / "providers.json").read_text()
+        before_r = (tmp_path / "routing.json").read_text()
+        report = merge_config("step-glm-mm")
+        assert not any(report[k] for k in ("providers_added", "profiles_added",
+                                           "settings_added", "behavior_shift"))
+        assert (tmp_path / "providers.json").read_text() == before_p
+        assert (tmp_path / "routing.json").read_text() == before_r
+        assert not (tmp_path / "routing.json.bak").exists()
+
+    def test_second_run_is_idempotent(self, tmp_path, monkeypatch):
+        self._seed_minimal(tmp_path, monkeypatch)
+        merge_config("step-glm-mm")
+        after_first = (tmp_path / "routing.json").read_text()
+        report = merge_config("step-glm-mm")
+        assert not any(report[k] for k in ("providers_added", "profiles_added",
+                                           "settings_added"))
+        assert (tmp_path / "routing.json").read_text() == after_first
+
+    def test_existing_values_never_overwritten(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {
+            "anthropic": {"stepfun": {"base_url": "https://my-proxy.internal/plan",
+                                      "auth": "${MINE}"},
+                          "glm": {"base_url": "https://glm.internal", "auth": "${GLM_MINE}"}},
+            "openai-chat": {"stepfun": {"base_url": "https://sf.internal/v1", "auth": "${MINE}"},
+                            "glm": {"base_url": "https://glm.internal/v4", "auth": "${GLM_MINE}"}},
+        }, {
+            "settings": {"imageModel": "pro", "defaultModel": "flash",
+                         "searchResultDiscount": 0.5},
+            "cc-router-1": {"protocol": "anthropic", "longContextThreshold": 12345,
+                            "destinations": {"flash": "stepfun,f", "pro": "glm,p"}},
+        })
+        before = (tmp_path / "routing.json").read_text()
+        report = merge_config("step-glm-mm")
+        assert report["providers_added"] == []
+        assert report["profiles_added"] == []
+        assert report["settings_added"] == []
+        assert report["behavior_shift"] == []
+        assert set(report["providers_skipped"]) == {
+            "anthropic.stepfun", "anthropic.glm", "openai-chat.stepfun", "openai-chat.glm"}
+        assert report["profiles_skipped"] == ["cc-router-1"]
+        assert (tmp_path / "routing.json").read_text() == before
+
+    def test_profile_collision_skipped_and_reported(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        init_config("default")
+        report = merge_config("step-glm-mm")
+        assert report["profiles_skipped"] == ["cc-router-1"]
+        routing = json.loads((tmp_path / "routing.json").read_text())
+        assert routing["cc-router-1"]["protocol"] == "anthropic"
+        assert routing["cc-router-1"]["destinations"]["pro"] == "anthropic,claude-opus-5"
+
+    def test_backup_holds_pre_merge_content(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        init_config("default")
+        merge_config("step-glm-mm")
+        rbak = json.loads((tmp_path / "routing.json.bak").read_text())
+        assert "imageModel" not in rbak["settings"]
+        pbak = json.loads((tmp_path / "providers.json.bak").read_text())
+        assert "glm" not in pbak["anthropic"]
+
+    def test_non_dict_settings_dies_before_writes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"anthropic": {}}, {"settings": ["nope"]})
+        with pytest.raises(SystemExit, match="'settings' must be an object"):
+            merge_config("step-glm-mm")
+        # providers.json must not carry a half-applied merge
+        assert json.loads((tmp_path / "providers.json").read_text()) == {"anthropic": {}}
+
+    def test_unknown_template_dies(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"anthropic": {}}, {})
+        with pytest.raises(SystemExit, match="unknown template 'nope'"):
+            merge_config("nope")
 
 
 # ---------------------------------------------------------------------------
