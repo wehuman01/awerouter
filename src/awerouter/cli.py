@@ -312,19 +312,24 @@ _TOKEN_SHORT = {
 }
 
 
-def _settings_or_default():
+def _settings_or_default(profile_name=None):
     """Loaded routing settings, or None — usage views must not require
-    routing.json to exist."""
+    routing.json to exist. With a --profile filter, that profile's effective
+    settings (its overrides applied), so the discount/auto knobs match what
+    actually routed."""
     try:
-        return load_routing()[0]
+        settings, profiles = load_routing()
     except SystemExit:
         return None
+    if profile_name and profile_name in profiles:
+        return profiles[profile_name].settings
+    return settings
 
 
 def _usage_header(since, profile_name):
     """Print search-discount context for the filtered window."""
     from awerouter.logging import rtk_totals, tail as _tail
-    settings = _settings_or_default()
+    settings = _settings_or_default(profile_name)
     discount = settings.search_result_discount if settings else 0.3
     cutoff = _parse_since(since) if since else None
     entries = [e for e in _tail(None) if _passes_log(e, cutoff, profile_name)]
@@ -562,7 +567,7 @@ def _usage_tokens(since, profile_name):
         click.echo("(no logs yet)")
         return
     n, total = b["requests"], b["total"]
-    settings = _settings_or_default()
+    settings = _settings_or_default(profile_name)
     discount = settings.search_result_discount if settings else 0.3
     fs = b.get("file_search_tokens", 0)
     eff = effective_tokens(total, fs, discount)
@@ -597,7 +602,7 @@ def calibrate(since, profile_name):
     """
     from awerouter.logging import auto_threshold, token_distribution
     cutoff = _window_cutoff(since, profile_name)
-    settings = _settings_or_default()
+    settings = _settings_or_default(profile_name)
     discount = settings.search_result_discount if settings else 0.3
     d = token_distribution(cutoff, profile_name, discount)
     if not d:

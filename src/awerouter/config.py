@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -217,25 +218,27 @@ def load_providers(path: Optional[Path] = None) -> dict[str, dict[str, Provider]
     return result
 
 
-def _parse_auto_threshold(raw) -> AutoThresholdConfig:
-    """Parse settings.longContextAuto (all fields optional; defaults in the type)."""
+def _parse_auto_threshold(raw, base: AutoThresholdConfig | None = None,
+                          where: str = "routing.json settings") -> AutoThresholdConfig:
+    """Parse a longContextAuto block (all fields optional; missing fields
+    inherit from base when given, else the type defaults)."""
+    cfg = replace(base) if base is not None else AutoThresholdConfig()
     if raw is None:
-        return AutoThresholdConfig()
+        return cfg
     if not isinstance(raw, dict):
-        die("routing.json settings 'longContextAuto' must be an object")
+        die(f"{where} 'longContextAuto' must be an object")
 
     def int_field(key: str, lo: int, hi: int | None = None) -> "int | None":
         if key not in raw:
             return None
         value = raw[key]
         if isinstance(value, bool) or not isinstance(value, int):
-            die(f"routing.json settings longContextAuto '{key}' must be an integer, got: {value!r}")
+            die(f"{where} longContextAuto '{key}' must be an integer, got: {value!r}")
         bound = f" in {lo}-{hi}" if hi is not None else f" >= {lo}"
         if value < lo or (hi is not None and value > hi):
-            die(f"routing.json settings longContextAuto '{key}' must be{bound}, got: {value}")
+            die(f"{where} longContextAuto '{key}' must be{bound}, got: {value}")
         return value
 
-    cfg = AutoThresholdConfig()
     if (v := int_field("percentile", 1, 99)) is not None:
         cfg.percentile = v
     if (v := int_field("windowDays", 1)) is not None:
@@ -247,32 +250,89 @@ def _parse_auto_threshold(raw) -> AutoThresholdConfig:
     return cfg
 
 
-def _parse_tool_routing(raw) -> ToolRoutingConfig:
-    """settings.toolRouting: one block for every tool-keyed routing rule:
+def _parse_tool_routing(raw, base: ToolRoutingConfig | None = None,
+                        where: str = "routing.json settings") -> ToolRoutingConfig:
+    """A toolRouting block: one place for every tool-keyed routing rule:
     {"webSearch": "pro", "edit": "pro"}.
 
-    Values are destination keys or null; absent block = defaults on
-    (webSearch null falls back to the legacy webSearchModel setting)."""
+    Values are destination keys or null; an absent block = base (or defaults)
+    — webSearch null falls back to the legacy webSearchModel setting."""
+    cfg = replace(base) if base is not None else ToolRoutingConfig()
     if raw is None:
-        return ToolRoutingConfig()
+        return cfg
     if not isinstance(raw, dict):
-        die("routing.json settings 'toolRouting' must be an object")
+        die(f"{where} 'toolRouting' must be an object")
     for removed in ("search", "mechanical"):
         if removed in raw:
             die(
-                f"routing.json settings toolRouting '{removed}' was removed: L4 is now a "
+                f"{where} toolRouting '{removed}' was removed: L4 is now a "
                 f"single edit checkpoint (search/mechanical routed to flash, which is "
                 f"already the default); delete the key — see CHANGELOG v0.4.8"
             )
-    cfg = ToolRoutingConfig()
     keys = {"webSearch": "web_search", "edit": "edit"}
     for json_key, field_name in keys.items():
         value = raw.get(json_key, getattr(cfg, field_name))
         if value is not None and value not in ("flash", "pro"):
-            die(f"routing.json settings toolRouting '{json_key}' must be "
+            die(f"{where} toolRouting '{json_key}' must be "
                 f"'flash', 'pro', or null, got: {value!r}")
         setattr(cfg, field_name, value)
     return cfg
+
+
+# Every settings key, global or per-profile — a typo'd key dies at load
+# instead of silently inheriting the global value.
+_SETTINGS_KEYS = frozenset({
+    "backgroundModel", "thinkModel", "webSearchModel", "imageModel",
+    "defaultModel", "searchResultDiscount", "toolRouting", "longContextAuto",
+})
+
+# Keys that belong to the profile body itself (settings keys may join them).
+_PROFILE_KEYS = frozenset({
+    "protocol", "longContextThreshold", "destinations", "port", "rtk",
+})
+
+
+def _model_field(raw: dict, key: str, inherited: str, where: str, hint: str = "") -> str:
+    """A flash/pro destination key with validation ('imageModel' and friends)."""
+    value = str(raw.get(key, inherited))
+    if value not in ("flash", "pro"):
+        die(f"{where} '{key}' must be 'flash' or 'pro'{hint}, got: {value!r}")
+    return value
+
+
+def _parse_settings(raw: dict, base: Settings | None = None,
+                    where: str = "routing.json settings") -> Settings:
+    """Parse a settings block over a base: global settings parse with no base
+    (type defaults apply), a profile's block parses over the global one —
+    every missing key inherits, nested blocks (toolRouting, longContextAuto)
+    inherit field by field."""
+    if not isinstance(raw, dict):
+        die(f"{where} must be an object")
+    unknown = set(raw) - _SETTINGS_KEYS
+    if unknown:
+        die(f"{where}: unknown key(s): {', '.join(sorted(unknown))}")
+    b = base if base is not None else Settings()
+
+    raw_discount = raw.get("searchResultDiscount", b.search_result_discount)
+    try:
+        discount = float(raw_discount)
+    except (TypeError, ValueError):
+        die(f"{where} 'searchResultDiscount' must be a number in [0, 1], got: {raw_discount!r}")
+    if not 0 <= discount <= 1:
+        die(f"{where} 'searchResultDiscount' must be in [0, 1], got: {discount}")
+
+    return Settings(
+        background_model=str(raw.get("backgroundModel", b.background_model)),
+        think_model=str(raw.get("thinkModel", b.think_model)),
+        web_search_model=_model_field(raw, "webSearchModel", b.web_search_model, where,
+                                      hint=" (or move it into toolRouting.webSearch)"),
+        image_model=_model_field(raw, "imageModel", b.image_model, where),
+        default_model=_model_field(raw, "defaultModel", b.default_model, where),
+        search_result_discount=discount,
+        long_context_auto=_parse_auto_threshold(
+            raw.get("longContextAuto"), b.long_context_auto, where),
+        tool_routing=_parse_tool_routing(raw.get("toolRouting"), b.tool_routing, where),
+    )
 
 
 def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, RoutingProfile]]:
@@ -280,37 +340,10 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
     path = path or routing_path()
     data = _load_json(path, "routing.json")
 
-    # Parse optional global settings (defaults: flash/pro)
+    # Optional global settings (defaults: flash/pro) — the base every
+    # profile-level settings block inherits from.
     raw_settings = data.pop("settings", {})
-    if not isinstance(raw_settings, dict):
-        die("routing.json 'settings' must be an object")
-    raw_discount = raw_settings.get("searchResultDiscount", 0.3)
-    try:
-        discount = float(raw_discount)
-    except (TypeError, ValueError):
-        die(f"routing.json settings 'searchResultDiscount' must be a number in [0, 1], got: {raw_discount!r}")
-    if not 0 <= discount <= 1:
-        die(f"routing.json settings 'searchResultDiscount' must be in [0, 1], got: {discount}")
-    web_search_model = str(raw_settings.get("webSearchModel", "pro"))
-    if web_search_model not in ("flash", "pro"):
-        die(f"routing.json settings 'webSearchModel' must be 'flash' or 'pro' "
-            f"(or move it into toolRouting.webSearch), got: {web_search_model!r}")
-    image_model = str(raw_settings.get("imageModel", "pro"))
-    if image_model not in ("flash", "pro"):
-        die(f"routing.json settings 'imageModel' must be 'flash' or 'pro', got: {image_model!r}")
-    default_model = str(raw_settings.get("defaultModel", "flash"))
-    if default_model not in ("flash", "pro"):
-        die(f"routing.json settings 'defaultModel' must be 'flash' or 'pro', got: {default_model!r}")
-    settings = Settings(
-        background_model=str(raw_settings.get("backgroundModel", "flash")),
-        think_model=str(raw_settings.get("thinkModel", "pro")),
-        web_search_model=web_search_model,
-        image_model=image_model,
-        default_model=default_model,
-        search_result_discount=discount,
-        long_context_auto=_parse_auto_threshold(raw_settings.get("longContextAuto")),
-        tool_routing=_parse_tool_routing(raw_settings.get("toolRouting")),
-    )
+    settings = _parse_settings(raw_settings)
 
     profiles: dict[str, RoutingProfile] = {}
     for name, body in data.items():
@@ -320,6 +353,16 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
             die(
                 f"profile '{name}': 'agent' was renamed to 'protocol' "
                 "(claude → anthropic, codex → openai-responses); edit routing.json"
+            )
+        # Settings keys may sit directly in the profile body (flat, next to
+        # protocol/destinations); anything else is a typo and dies.
+        unknown = set(body) - _PROFILE_KEYS - _SETTINGS_KEYS
+        if unknown:
+            listed = ", ".join(f"'{k}'" for k in sorted(unknown))
+            die(
+                f"profile '{name}': unknown key(s): {listed}; expected "
+                f"profile keys ({', '.join(sorted(_PROFILE_KEYS))}) or settings keys "
+                f"overriding the global block ({', '.join(sorted(_SETTINGS_KEYS))})"
             )
         protocol = body.get("protocol")
         if isinstance(protocol, str):
@@ -350,6 +393,11 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
         rtk_raw = body.get("rtk", False)
         if not isinstance(rtk_raw, bool):
             die(f"profile '{name}': 'rtk' must be true or false, got: {rtk_raw!r}")
+        # Per-profile settings override the global block key by key (nested
+        # blocks field by field); keys absent from the body inherit everything.
+        raw_psettings = {k: v for k, v in body.items() if k in _SETTINGS_KEYS}
+        psettings = _parse_settings(
+            raw_psettings, base=settings, where=f"profile '{name}':")
         dests_raw = body["destinations"]
         if not isinstance(dests_raw, dict):
             die(f"profile '{name}' destinations must be an object")
@@ -361,9 +409,10 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
         raw_threshold = body["longContextThreshold"]
         if raw_threshold == "auto":
             # Resolved at serve start; the fallback value keeps reads before
-            # that (config show, tests) meaningful.
+            # that (config show, tests) meaningful. A profile may retune it
+            # via its own longContextAuto.fallbackThreshold.
             threshold_auto = True
-            threshold = settings.long_context_auto.fallback_threshold
+            threshold = psettings.long_context_auto.fallback_threshold
         else:
             threshold_auto = False
             try:
@@ -382,6 +431,8 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
             port=port_raw,
             threshold_auto=threshold_auto,
             rtk=rtk_raw,
+            settings=psettings,
+            settings_overrides=raw_psettings,
         )
     return settings, profiles
 
@@ -415,7 +466,8 @@ def validate_profiles(providers_all: dict, profiles: dict) -> None:
 
 
 def load_for_profile(name: str) -> tuple[dict[str, dict[str, Provider]], RoutingProfile, Settings]:
-    """Resolve one profile: returns (providers by served protocol, profile, settings)."""
+    """Resolve one profile: returns (providers by served protocol, profile,
+    the profile's effective settings — global merged with its overrides)."""
     providers_all = load_providers()
     settings, profiles = load_routing()
     if name not in profiles:
@@ -423,7 +475,7 @@ def load_for_profile(name: str) -> tuple[dict[str, dict[str, Provider]], Routing
         die(f"profile '{name}' not found in routing.json; available: {avail}")
     profile = profiles[name]
     validate_profiles(providers_all, {name: profile})
-    return {p: providers_all[p] for p in profile.protocols}, profile, settings
+    return {p: providers_all[p] for p in profile.protocols}, profile, profile.settings
 
 
 def load_default_profile() -> tuple[dict[str, Provider], RoutingProfile, Settings]:
@@ -635,6 +687,9 @@ def format_routing_display(settings: Settings, profiles: dict[str, RoutingProfil
             entry["port"] = p.port
         if p.rtk:
             entry["rtk"] = True
+        # mirrors the config shape: overridden settings keys sit flat in the
+        # profile body, next to protocol/destinations
+        entry.update(p.settings_overrides)
         entry["destinations"] = {
             k: f"{v.provider_name},{v.model}" for k, v in p.destinations.items()
         }
@@ -779,7 +834,9 @@ def config_show_cmd(profile):
     click.echo(format_providers_display(used))
     click.echo()
     click.echo("profile:")
-    click.echo(format_routing_display(settings, {profile: p}))
+    # the settings block shows this profile's effective values (global merged
+    # with its overrides); the profile entry lists the override keys only
+    click.echo(format_routing_display(p.settings, {profile: p}))
 
 
 @config.command("edit")

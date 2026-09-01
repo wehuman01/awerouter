@@ -715,6 +715,17 @@ def _client_hints(protocols, display_host: str, port: int, settings) -> str:
 _PORT_SCAN_SPAN = 100
 
 
+def _fmt_setting_value(value) -> str:
+    """One overrides-line item: strings bare, nested blocks as compact JSON."""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, separators=(", ", ": "))
+
+
+def _overrides_line(overrides: dict) -> str:
+    return "  ".join(f"{k}={_fmt_setting_value(v)}" for k, v in overrides.items())
+
+
 def _resolve_auto_threshold(profile, settings) -> "str | None":
     """Materialize longContextThreshold: "auto" from this profile's own log.
 
@@ -851,6 +862,8 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
     parts = [f"web→{tr.web_search or settings.web_search_model}",
              *(f"{k}→{v}" for k, v in (("edit", tr.edit),) if v)]
     print(f"  tool          -> {'  '.join(parts)}")
+    if profile.settings_overrides:
+        print(f"  overrides     -> {_overrides_line(profile.settings_overrides)}")
     print(f"  flash  -> {profile.destinations['flash'].provider_name}/{profile.destinations['flash'].model}")
     print(f"  pro    -> {profile.destinations['pro'].provider_name}/{profile.destinations['pro'].model}")
     if auto_line is not None:

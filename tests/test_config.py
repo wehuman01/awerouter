@@ -643,6 +643,180 @@ class TestLoadRouting:
 # load_for_profile / load_default_profile
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# per-profile settings overrides
+# ---------------------------------------------------------------------------
+
+class TestProfileSettings:
+    """Settings keys may sit directly in a profile body (flat, next to
+    protocol/destinations); they override the global block key by key, and
+    missing keys (nested fields included) inherit from it."""
+
+    def test_absent_keys_inherit_global(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {"backgroundModel": "bg", "thinkModel": "strong",
+                         "imageModel": "flash"},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        settings, profiles = load_routing()
+        p = profiles["cc-1"].settings
+        assert p.background_model == "bg"
+        assert p.think_model == "strong"
+        assert p.image_model == "flash"
+        assert p.default_model == "flash"  # unset everywhere -> type default
+
+    def test_override_image_default_models(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {"imageModel": "pro", "defaultModel": "flash"},
+            "plain": {"protocol": "anthropic", "longContextThreshold": 1,
+                      "destinations": {"flash": "p,m", "pro": "p,m"}},
+            "mm": {"protocol": "anthropic", "longContextThreshold": 1,
+                   "destinations": {"flash": "p,m", "pro": "p,m"},
+                   "imageModel": "flash", "defaultModel": "pro"},
+        })
+        settings, profiles = load_routing()
+        assert settings.image_model == "pro"          # global untouched
+        assert settings.default_model == "flash"
+        assert profiles["plain"].settings.image_model == "pro"
+        assert profiles["mm"].settings.image_model == "flash"
+        assert profiles["mm"].settings.default_model == "pro"
+
+    def test_override_background_think_tier_labels(self, tmp_path, monkeypatch):
+        """backgroundModel/thinkModel in a profile body parse as overrides —
+        the pre-v0.5.2 per-profile shape, now honored again."""
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {"backgroundModel": "flash", "thinkModel": "pro"},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"},
+                     "backgroundModel": "c1/flash", "thinkModel": "c1/think"},
+        })
+        p = load_routing()[1]["cc-1"].settings
+        assert p.background_model == "c1/flash"
+        assert p.think_model == "c1/think"
+
+    def test_nested_tool_routing_inherits_field_by_field(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {"toolRouting": {"webSearch": "flash", "edit": "pro"}},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"},
+                     "toolRouting": {"edit": None}},
+        })
+        tr = load_routing()[1]["cc-1"].settings.tool_routing
+        assert tr.web_search == "flash"  # inherited from global
+        assert tr.edit is None           # overridden to disabled
+
+    def test_long_context_auto_partial_inherit(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {"longContextAuto": {"percentile": 90, "windowDays": 14}},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"},
+                     "longContextAuto": {"percentile": 99}},
+        })
+        cfg = load_routing()[1]["cc-1"].settings.long_context_auto
+        assert cfg.percentile == 99
+        assert cfg.window_days == 14    # inherited
+        assert cfg.min_samples == 50    # unset everywhere -> default
+
+    def test_threshold_auto_uses_profile_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": "auto",
+                     "destinations": {"flash": "p,m", "pro": "p,m"},
+                     "longContextAuto": {"fallbackThreshold": 4000}},
+        })
+        _, profiles = load_routing()
+        assert profiles["cc-1"].long_context_threshold == 4000
+
+    def test_legacy_websearch_model_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {"webSearchModel": "pro"},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"},
+                     "webSearchModel": "flash"},
+        })
+        p = load_routing()[1]["cc-1"].settings
+        assert p.web_search_model == "flash"
+        assert p.tool_routing.web_search is None  # legacy fallback still applies
+
+    def test_search_discount_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {"searchResultDiscount": 0.3},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"},
+                     "searchResultDiscount": 0.5},
+        })
+        settings, profiles = load_routing()
+        assert settings.search_result_discount == 0.3
+        assert profiles["cc-1"].settings.search_result_discount == 0.5
+
+    def test_unknown_profile_key_dies(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"},
+                     "imageModle": "flash"},
+        })
+        with pytest.raises(SystemExit, match="profile 'cc-1'.*unknown key.*imageModle"):
+            load_routing()
+
+    def test_nested_settings_block_in_profile_dies(self, tmp_path, monkeypatch):
+        """Overrides are flat in the profile body — a nested `settings` key
+        (the never-released intermediate shape) dies as an unknown key."""
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"},
+                     "settings": {"imageModel": "flash"}},
+        })
+        with pytest.raises(SystemExit, match="unknown key.*'settings'"):
+            load_routing()
+
+    def test_unknown_key_in_global_dies(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {"bogus": 1},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        with pytest.raises(SystemExit, match="unknown key.*bogus"):
+            load_routing()
+
+    @pytest.mark.parametrize("key,bad", [
+        ("imageModel", "turbo"), ("defaultModel", "turbo"), ("webSearchModel", "turbo"),
+        ("searchResultDiscount", 2), ("toolRouting", {"edit": "turbo"}),
+        ("longContextAuto", {"percentile": 0}),
+    ])
+    def test_invalid_value_dies_naming_profile(self, tmp_path, monkeypatch, key, bad):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"},
+                     key: bad},
+        })
+        with pytest.raises(SystemExit, match=f"cc-1.*{key}"):
+            load_routing()
+
+    def test_load_for_profile_returns_effective(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"anthropic": {"p": {"base_url": "https://x", "auth": "${K}"}}}, {
+            "settings": {"defaultModel": "flash"},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m1", "pro": "p,m2"},
+                     "defaultModel": "pro"},
+        })
+        providers, profile, settings = load_for_profile("cc-1")
+        assert settings.default_model == "pro"
+        assert settings is profile.settings
+
+
 class TestLoadForProfile:
     def test_returns_settings(self, tmp_path, monkeypatch):
         monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
@@ -1017,6 +1191,24 @@ class TestFormatDisplay:
         assert data["cc-1"]["longContextThreshold"] == "auto"
         auto = data["settings"]["longContextAuto"]
         assert auto == {"percentile": 95, "windowDays": 7, "minSamples": 50, "fallbackThreshold": 8000}
+
+    def test_routing_shows_profile_override_keys_flat(self):
+        """Profile entries mirror the config shape: overridden settings keys
+        sit flat in the entry, next to protocol/destinations."""
+        settings = Settings(image_model="pro")
+        profiles = {
+            "plain": RoutingProfile("plain", "anthropic", 8000, {
+                "flash": Destination("p", "m1"), "pro": Destination("p", "m2")}),
+            "mm": RoutingProfile("mm", "anthropic", 8000, {
+                "flash": Destination("p", "m1"), "pro": Destination("p", "m2")},
+                settings=Settings(image_model="flash"),
+                settings_overrides={"imageModel": "flash"}),
+        }
+        data = json.loads(format_routing_display(settings, profiles))
+        assert "imageModel" not in data["plain"]
+        assert data["mm"]["imageModel"] == "flash"
+        # the global block still shows the global value
+        assert data["settings"]["imageModel"] == "pro"
 
 
 # ---------------------------------------------------------------------------

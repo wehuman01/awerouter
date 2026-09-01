@@ -381,11 +381,41 @@ Backend model names drift (see the Codex account section) — renaming is a one-
       "flash": "stepfun,step-3.7-flash",
       "pro":   "anthropic,claude-opus-5"
     }
+  },
+  "cc-pro-first": {
+    "protocol": "anthropic",
+    "longContextThreshold": 8000,
+    "destinations": {
+      "flash": "stepfun,step-3.7-flash",
+      "pro":   "anthropic,claude-opus-5"
+    },
+    "defaultModel": "pro"
   }
 }
 ```
 
 `settings` is optional (defaults: `flash`/`pro`). It maps the model ids CC sends for the background (Haiku) and think (Opus) tiers; every tool-keyed routing rule (L1 `webSearch` included) lives in `settings.toolRouting` — the legacy top-level `webSearchModel` still works as a fallback. `imageModel` re-aims the image guard (default `pro`; `flash` when pro is a non-multimodal flagship — see the step-glm-mm template) and `defaultModel` flips the cost-first fall-through (default `flash`; `pro` for pro-first profiles). The main loop uses `auto` — routed by difficulty by L3. Set these in your aweswitch profile: `ANTHROPIC_DEFAULT_HAIKU_MODEL=flash`, `ANTHROPIC_MODEL=auto`, `ANTHROPIC_DEFAULT_OPUS_MODEL=pro`.
+
+Every settings key can also be written **directly in a profile body**, flat next to `protocol`/`destinations` (`cc-pro-first` above flips only `defaultModel`). It then applies to that profile alone; missing keys — and, inside `toolRouting`/`longContextAuto`, missing fields — inherit from the global `settings` block, so each profile re-tunes exactly what differs. `config show <profile>` prints the profile's effective values with its override keys in the entry, and the serve banner lists them on an `overrides -> ...` line.
+
+Settings keys, their defaults, and what each one steers (all of them settable globally and per profile):
+
+| Key | Values | Default | Controls |
+|-----|--------|---------|----------|
+| `backgroundModel` | model id (e.g. `flash`, `c1/flash`) | `flash` | L2: requests carrying this tier label route to flash |
+| `thinkModel` | model id | `pro` | L2: requests carrying this tier label route to pro |
+| `webSearchModel` | `flash` / `pro` | `pro` | L1: destination for requests declaring `web_search` (legacy — `toolRouting.webSearch` wins when set) |
+| `imageModel` | `flash` / `pro` | `pro` | L1: destination for image-bearing requests (the capability guard — outranks tiers and length) |
+| `defaultModel` | `flash` / `pro` | `flash` | fall-through destination when no layer matches |
+| `searchResultDiscount` | number 0–1 | `0.3` | L3: weight of file-search (Grep/Glob/LS) result tokens; `1` = off |
+| `toolRouting.webSearch` | `flash` / `pro` / `null` | `null` | overrides `webSearchModel` for the web_search guard |
+| `toolRouting.edit` | `flash` / `pro` / `null` | `pro` | L4: destination for the turn after code changed; `null` disables the checkpoint |
+| `longContextAuto.percentile` | 1–99 | `95` | which percentile of the L3 distribution becomes the `"auto"` threshold |
+| `longContextAuto.windowDays` | ≥ 1 | `7` | trailing window for auto calibration |
+| `longContextAuto.minSamples` | ≥ 1 | `50` | below this many L3 samples, the fallback applies |
+| `longContextAuto.fallbackThreshold` | ≥ 0 | `8000` | threshold until enough samples exist (backs `"auto"` before serve resolves it) |
+
+`backgroundModel`/`thinkModel` take free-form model ids (whatever the client actually sends for those tiers), not `flash`/`pro`. Unknown keys — in `settings` or in a profile body — die at load naming the offender, so a typo never silently inherits the global value.
 
 `longContextThreshold` is an integer, or `"auto"` to calibrate it from this profile's own traffic: at every `serve` start, awerouter takes the `percentile` of the profile's L3 effective-token distribution over the trailing `windowDays` as the threshold. With fewer than `minSamples` L3 requests in the window (fresh profile, quiet week) the `fallbackThreshold` applies instead. All four knobs live in `settings.longContextAuto` and are optional — the banner always prints what was picked and why. Note the percentile sets the flash/pro *split*, not flash's capability ceiling: if your flash model degrades on very long contexts, keep a manual threshold.
 

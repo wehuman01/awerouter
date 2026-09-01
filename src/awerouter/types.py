@@ -55,7 +55,12 @@ class ToolRoutingConfig:
 
 @dataclass
 class Settings:
-    """Global routing settings (shared across all profiles)."""
+    """Routing settings — the global `settings` block in routing.json.
+
+    Every key may also be set per profile (a `settings` block inside the
+    profile body): missing keys inherit from this global block, so a profile
+    re-tunes only what differs. `RoutingProfile.settings` carries the merged
+    result the router actually uses."""
     background_model: str = "flash"   # L2 tier-label for background → flash dest
     think_model: str = "pro"          # L2 tier-label for think → pro dest
     web_search_model: str = "pro"     # L1 web_search destination key (legacy alias of toolRouting.webSearch)
@@ -79,6 +84,11 @@ class RoutingProfile:
     port: Optional[int] = None      # fixed listen port; --port overrides, else default 20128
     threshold_auto: bool = False    # longContextThreshold was "auto"; resolved at serve start
     rtk: bool = False               # compress tool_result content before routing (opt-in)
+    # Effective settings = global settings merged with this profile's overrides
+    # (what serve and the router use); the raw override keys below are
+    # display-only — settings keys configured directly in the profile body.
+    settings: Settings = field(default_factory=Settings)
+    settings_overrides: dict = field(default_factory=dict)
 
     def __post_init__(self):
         # Accept a bare string everywhere a list works ("anthropic" == ["anthropic"]).

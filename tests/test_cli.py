@@ -606,6 +606,28 @@ class TestConfigCommands:
         assert "cc-2" not in r.output  # other profiles excluded
         assert "stepfun" in r.output   # only providers this profile uses
 
+    def test_show_single_profile_settings_are_effective(self, tmp_path, monkeypatch):
+        """Per-profile show resolves overrides: the settings block shows what
+        this profile actually routes with; override keys sit flat in the entry."""
+        routing = {
+            "settings": {"imageModel": "pro", "defaultModel": "flash"},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 8000,
+                     "destinations": {"flash": "stepfun,sf-flash", "pro": "anthropic,opus"},
+                     "imageModel": "flash"},
+        }
+        _setup(tmp_path, monkeypatch, _providers(), routing)
+        r = CliRunner().invoke(cli, ["config", "show", "cc-1"])
+        assert r.exit_code == 0, r.output
+        shown = json.loads(r.output.split("profile:\n", 1)[1])
+        assert shown["settings"]["imageModel"] == "flash"    # effective
+        assert shown["settings"]["defaultModel"] == "flash"  # inherited
+        assert shown["cc-1"]["imageModel"] == "flash"        # raw override, flat
+        # the full view still shows the global value
+        r = CliRunner().invoke(cli, ["config", "show"])
+        full = json.loads(r.output.split("routing.json:\n", 1)[1])
+        assert full["settings"]["imageModel"] == "pro"
+        assert full["cc-1"]["imageModel"] == "flash"
+
     def test_show_unknown_profile_dies(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch, _providers(), _routing())
         r = CliRunner().invoke(cli, ["config", "show", "nope"])

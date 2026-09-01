@@ -381,11 +381,41 @@ awerouter init step-glm-mm        # 需要设置 STEPFUN_AUTH_TOKEN 和 GLM_API_
       "flash": "stepfun,step-3.7-flash",
       "pro":   "anthropic,claude-opus-5"
     }
+  },
+  "cc-pro-first": {
+    "protocol": "anthropic",
+    "longContextThreshold": 8000,
+    "destinations": {
+      "flash": "stepfun,step-3.7-flash",
+      "pro":   "anthropic,claude-opus-5"
+    },
+    "defaultModel": "pro"
   }
 }
 ```
 
 `settings` 可省（默认 `flash`/`pro`）。它定义 CC 发送的档位 model id：background（Haiku 档）、think（Opus 档）；所有按工具路由的规则（含 L1 的 `webSearch`）统一放在 `settings.toolRouting`——旧顶层 `webSearchModel` 仍作为兜底兼容。`imageModel` 重定向图片护栏（默认 `pro`；旗舰不支持多模态时改 `flash`，见 step-glm-mm 模版），`defaultModel` 翻转兜底去向（默认 `flash`；pro 优先的配置改 `pro`）。主循环用 `auto`——由 L3 按难度路由。在 aweswitch profile 里设：`ANTHROPIC_DEFAULT_HAIKU_MODEL=flash`、`ANTHROPIC_MODEL=auto`、`ANTHROPIC_DEFAULT_OPUS_MODEL=pro`。
+
+settings 的每个键也都可以**直接写在 profile 体内**，与 `protocol`/`destinations` 平级（上面的 `cc-pro-first` 只翻转了 `defaultModel`），且只对这一个 profile 生效。缺的键——包括 `toolRouting`/`longContextAuto` 里缺的字段——逐键继承全局 `settings`，所以每个 profile 只调自己不同的部分。`config show <profile>` 会打印该 profile 的生效值（覆盖键平铺在条目里），serve 横幅用一行 `overrides -> ...` 列出覆盖项。
+
+全部 settings 键、默认值与作用（每个键都既可全局配置、也可在 profile 里配置）：
+
+| 键 | 取值 | 默认 | 作用 |
+|----|------|------|------|
+| `backgroundModel` | model id（如 `flash`、`c1/flash`） | `flash` | L2：带此档位标签的请求走 flash |
+| `thinkModel` | model id | `pro` | L2：带此档位标签的请求走 pro |
+| `webSearchModel` | `flash` / `pro` | `pro` | L1：声明 `web_search` 工具的请求去向（旧键——设了 `toolRouting.webSearch` 时以它为准） |
+| `imageModel` | `flash` / `pro` | `pro` | L1：带图请求去向（能力护栏——优先级高于档位和长度） |
+| `defaultModel` | `flash` / `pro` | `flash` | 所有层都不匹配时的兜底去向 |
+| `searchResultDiscount` | 0–1 数字 | `0.3` | L3：文件搜索（Grep/Glob/LS）结果 token 的权重；`1` = 关闭 |
+| `toolRouting.webSearch` | `flash` / `pro` / `null` | `null` | 覆盖 `webSearchModel` 的 web_search 护栏去向 |
+| `toolRouting.edit` | `flash` / `pro` / `null` | `pro` | L4：代码刚被修改后的那一轮去向；`null` 关闭该检查点 |
+| `longContextAuto.percentile` | 1–99 | `95` | `"auto"` 阈值取 L3 分布的哪个分位 |
+| `longContextAuto.windowDays` | ≥ 1 | `7` | 自动校准的回看窗口（天） |
+| `longContextAuto.minSamples` | ≥ 1 | `50` | 窗口内 L3 样本不足此数时用兜底阈值 |
+| `longContextAuto.fallbackThreshold` | ≥ 0 | `8000` | 样本不足时的阈值（serve 解析 `"auto"` 前也用它） |
+
+`backgroundModel`/`thinkModel` 填的是自由格式的 model id（客户端实际发送的档位名），不是 `flash`/`pro`。未知键——无论写在 `settings` 还是 profile 体内——加载时直接报错并指明是哪个键，拼错不会静默继承全局值。
 
 `longContextThreshold` 可以是整数，也可以写 `"auto"`：每次 `serve` 启动时，awerouter 取该 profile 自己最近 `windowDays` 天 L3 有效 token 分布的 `percentile` 分位值作为阈值。窗口内 L3 请求数不足 `minSamples`（新 profile、流量清淡）时改用 `fallbackThreshold`。四个参数都在 `settings.longContextAuto` 里，全部可选——横幅每次都会打印选了什么、依据是什么。注意：分位值决定的是 flash/pro 的*分配比例*，不代表 flash 的能力上限——如果你的 flash 模型在超长上下文上明显退化，请继续用固定阈值。
 
