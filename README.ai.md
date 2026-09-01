@@ -144,14 +144,14 @@ Replace `<skill-directory>` with the path from step B1.
 ## Step 3: Initialize config
 
 ```bash
-awerouter init            # or pick a bundled combo: awerouter init step-glm / glm-codex
+awerouter init            # or pick a bundled combo: awerouter init step-glm / glm-codex / step-glm-mm
 ```
 
 This creates config files in `~/.config/awerouter/` from a bundled template:
 - `providers.json`
 - `routing.json`
 
-Bundled templates are `<name>.providers.json` + `<name>.routing.json` pairs (`default`, `step-glm`, `glm-codex`; the README's "Common setup templates" section says what each combo routes where). An unknown name fails with the list of available templates.
+Bundled templates are `<name>.providers.json` + `<name>.routing.json` pairs (`default`, `step-glm`, `glm-codex`, `step-glm-mm`; the README's "Common setup templates" section says what each combo routes where). An unknown name fails with the list of available templates. `step-glm-mm` is the multimodal sidekick: settings `imageModel: flash` + `defaultModel: pro` make a non-multimodal flagship (pro) do all the work while image-bearing requests go to the multimodal flash.
 
 Override with `AWEROUTER_CONFIG_DIR` if needed.
 

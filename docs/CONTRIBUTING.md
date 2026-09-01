@@ -50,10 +50,10 @@ Claude Code
    │ POST /v1/messages (full history, stateless protocol)
    ▼
 awerouter
-   ├─ resolve(): L1 capability guard (web_search) → L2 tier label
-   │             (backgroundModel/thinkModel) → L3 difficulty
-   │             (request tokens > threshold or image) → L4 edit
-   │             checkpoint (trailing tool batch changed code) → else flash
+   ├─ resolve(): L1 capability guard (web_search, image) → L2 tier
+   │             label (backgroundModel/thinkModel) → L3 difficulty
+   │             (request tokens > threshold) → L4 edit
+   │             checkpoint (trailing tool batch changed code) → else default
    ├─ rewrite model + auth header, forward to provider
    ├─ pre-stream fallback: flash → pro on 429/408/5xx/network errors
    └─ opaque SSE passthrough (response bytes are never parsed)
@@ -73,7 +73,7 @@ Key design decisions:
 Two files in `~/.config/awerouter/` (override with `AWEROUTER_CONFIG_DIR`):
 
 - `providers.json` — `{protocol: {provider: {base_url, auth?, auth_header?}}}`. Secrets use `${VAR}` references; missing env vars die at request time with an actionable message. `auth` is optional — omitted means a no-auth upstream (local model servers; requests go out with no auth header). `auth_header` is auto-detected from the base_url netloc (`anthropic.com` → `x-api-key`, else `Authorization` with auto-prefixed `Bearer `).
-- `routing.json` — optional `settings` (`backgroundModel`, `thinkModel`, `toolRouting` with `webSearch`/`edit`; legacy `webSearchModel` still works, `longContextAuto`) plus profile entries `{protocol, port?, longContextThreshold, rtk?, destinations: {flash, pro}}` where a destination is `"provider,model"` and `longContextThreshold` is an integer or `"auto"`.
+- `routing.json` — optional `settings` (`backgroundModel`, `thinkModel`, `toolRouting` with `webSearch`/`edit`; legacy `webSearchModel` still works, `imageModel`/`defaultModel` destination keys, `longContextAuto`) plus profile entries `{protocol, port?, longContextThreshold, rtk?, destinations: {flash, pro}}` where a destination is `"provider,model"` and `longContextThreshold` is an integer or `"auto"`.
 
 Rules:
 

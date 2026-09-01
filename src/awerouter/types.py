@@ -59,6 +59,8 @@ class Settings:
     background_model: str = "flash"   # L2 tier-label for background → flash dest
     think_model: str = "pro"          # L2 tier-label for think → pro dest
     web_search_model: str = "pro"     # L1 web_search destination key (legacy alias of toolRouting.webSearch)
+    image_model: str = "pro"          # L1 destination key for image-bearing requests (multimodal sidekick: flash)
+    default_model: str = "flash"      # fall-through destination key (pro-first profiles: pro)
     search_result_discount: float = 0.3  # L3 weight of file-search (Grep/Glob/LS) result tokens; 1 = off
     long_context_auto: AutoThresholdConfig = field(default_factory=AutoThresholdConfig)
     tool_routing: ToolRoutingConfig = field(default_factory=ToolRoutingConfig)

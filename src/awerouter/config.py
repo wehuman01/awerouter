@@ -295,10 +295,18 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
     if web_search_model not in ("flash", "pro"):
         die(f"routing.json settings 'webSearchModel' must be 'flash' or 'pro' "
             f"(or move it into toolRouting.webSearch), got: {web_search_model!r}")
+    image_model = str(raw_settings.get("imageModel", "pro"))
+    if image_model not in ("flash", "pro"):
+        die(f"routing.json settings 'imageModel' must be 'flash' or 'pro', got: {image_model!r}")
+    default_model = str(raw_settings.get("defaultModel", "flash"))
+    if default_model not in ("flash", "pro"):
+        die(f"routing.json settings 'defaultModel' must be 'flash' or 'pro', got: {default_model!r}")
     settings = Settings(
         background_model=str(raw_settings.get("backgroundModel", "flash")),
         think_model=str(raw_settings.get("thinkModel", "pro")),
         web_search_model=web_search_model,
+        image_model=image_model,
+        default_model=default_model,
         search_result_discount=discount,
         long_context_auto=_parse_auto_threshold(raw_settings.get("longContextAuto")),
         tool_routing=_parse_tool_routing(raw_settings.get("toolRouting")),
@@ -509,6 +517,8 @@ def format_routing_display(settings: Settings, profiles: dict[str, RoutingProfil
             "backgroundModel": settings.background_model,
             "thinkModel": settings.think_model,
             "webSearchModel": settings.web_search_model,
+            "imageModel": settings.image_model,
+            "defaultModel": settings.default_model,
             "searchResultDiscount": settings.search_result_discount,
             "toolRouting": {
                 "webSearch": settings.tool_routing.web_search or settings.web_search_model,

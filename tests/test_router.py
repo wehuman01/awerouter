@@ -17,10 +17,11 @@ def _cfg():
 
 
 def _resolve(model, body, threshold=32000, web_search_model="pro", search_discount=0.3,
-             tool_edit_dest="pro"):
+             tool_edit_dest="pro", image_dest="pro", default_dest="flash"):
     return resolve(
         model, extract("anthropic", body), _cfg(), "flash", "think",
         threshold, web_search_model, search_discount, tool_edit_dest,
+        image_dest, default_dest,
     )
 
 
@@ -676,6 +677,56 @@ class TestResolveEditCheckpoint:
         r = _resolve("auto", self._body("Edit"), tool_edit_dest="flash")
         assert r.destination == "flash"
         assert r.label == "toolEdit"
+
+
+class TestResolveMultimodalSidekick:
+    """imageModel/defaultModel invert the split for a non-multimodal flagship:
+    pro does all the work, the multimodal flash takes image-bearing requests
+    (the step-glm-mm template)."""
+
+    @staticmethod
+    def _image_body(extra_text=""):
+        content = [{"type": "image", "data": "x"}]
+        if extra_text:
+            content.append({"type": "text", "text": extra_text})
+        return {"messages": [{"content": content}]}
+
+    def test_image_goes_flash_when_configured(self):
+        r = _resolve("auto", self._image_body(), image_dest="flash")
+        assert r.destination == "flash"
+        assert r.label == "image"
+
+    def test_image_guard_beats_tier_labels(self):
+        """model=think would go pro at L2, but this pro is blind to images —
+        the capability guard wins."""
+        r = _resolve("think", self._image_body(), image_dest="flash")
+        assert r.destination == "flash"
+        assert r.label == "image"
+
+    def test_image_guard_beats_long_context(self):
+        """A long image-bearing session still needs the multimodal model."""
+        r = _resolve("auto", self._image_body("x" * 500), threshold=100, image_dest="flash")
+        assert r.destination == "flash"
+        assert r.label == "image"
+
+    def test_default_dest_pro(self):
+        r = _resolve("auto", {"messages": [{"content": "short question"}]}, default_dest="pro")
+        assert r.destination == "pro"
+        assert r.label == "default"
+
+    def test_default_dest_pro_keeps_long_context_pro(self):
+        """Inverting the fall-through changes no other layer: above the
+        threshold the label still records why."""
+        body = {"messages": [{"content": "x" * 500}]}
+        r = _resolve("auto", body, threshold=100, default_dest="pro")
+        assert r.destination == "pro"
+        assert r.label == "longContext"
+
+    def test_default_dest_pro_keeps_background_flash(self):
+        """Tier labels still fire: background tasks stay on the flash slot."""
+        r = _resolve("flash", {"messages": [{"content": "hi"}]}, default_dest="pro")
+        assert r.destination == "flash"
+        assert r.label == "background"
 
 
 class TestTrailingBatch:

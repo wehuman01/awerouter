@@ -407,6 +407,38 @@ class TestLoadRouting:
         with pytest.raises(SystemExit, match="webSearchModel"):
             load_routing()
 
+    def test_settings_image_default_models(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {"imageModel": "flash", "defaultModel": "pro"},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        settings = load_routing()[0]
+        assert settings.image_model == "flash"
+        assert settings.default_model == "pro"
+
+    def test_settings_image_default_defaults(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        settings = load_routing()[0]
+        assert settings.image_model == "pro"
+        assert settings.default_model == "flash"
+
+    @pytest.mark.parametrize("key", ["imageModel", "defaultModel"])
+    def test_settings_image_default_invalid_dies(self, tmp_path, monkeypatch, key):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "settings": {key: "turbo"},
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m", "pro": "p,m"}},
+        })
+        with pytest.raises(SystemExit, match=key):
+            load_routing()
+
     @pytest.mark.parametrize("key,bad", [
         ("percentile", 0), ("percentile", 100), ("percentile", "95"), ("percentile", True),
         ("windowDays", 0), ("minSamples", 0), ("fallbackThreshold", -1),
@@ -755,6 +787,8 @@ class TestFormatDisplay:
         data = json.loads(format_routing_display(settings, profiles))
         assert data["settings"]["backgroundModel"] == "flash"
         assert data["settings"]["webSearchModel"] == "pro"
+        assert data["settings"]["imageModel"] == "pro"
+        assert data["settings"]["defaultModel"] == "flash"
         assert data["cc-1"]["protocol"] == "anthropic"
         assert "backgroundModel" not in data["cc-1"]
         assert "port" not in data["cc-1"]

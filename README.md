@@ -120,7 +120,7 @@ Quick Start:
 
 ```bash
 # 1. Init config (creates ~/.config/awerouter/{providers,routing}.json)
-awerouter init                # or pick a bundled combo: awerouter init step-glm / glm-codex (see "Common setup templates")
+awerouter init                # or pick a bundled combo: awerouter init step-glm / glm-codex / step-glm-mm (see "Common setup templates")
 
 # 2. Interactively add a profile (writes both files, references stay consistent)
 awerouter add
@@ -133,6 +133,8 @@ awerouter serve [cc-router-1]     # shorthand: awerouter cc-router-1
 export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 # aweswitch profile env: ANTHROPIC_MODEL=auto, _HAIKU_=flash, _OPUS_=pro
 ```
+
+The bundled template source is [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/); `awerouter init <template>` generates its matching files in your configuration directory.
 
 ## Config
 
@@ -271,7 +273,7 @@ The sentinel only loads in the `anthropic` group — the subscription backend sp
 
 ### Common setup templates
 
-`awerouter init` takes an optional bundled template name and generates a matching `providers.json` + `routing.json` pair in one shot (no name: `default`). Two ready-made combos ship out of the box; hand-copying any snippet below into your own config works just as well. Keys are `${ENV_VAR}` placeholders — a missing env var dies at startup with a clear message.
+`awerouter init` takes an optional bundled template name and generates a matching `providers.json` + `routing.json` pair in one shot (no name: `default`). Three ready-made combos ship out of the box; hand-copying any snippet below into your own config works just as well. Keys are `${ENV_VAR}` placeholders — a missing env var dies at startup with a clear message.
 
 **step-glm** — key-only Chinese two-tier combo: flash on StepFun step_plan, pro on the GLM coding plan. For agents speaking the openai-chat protocol:
 
@@ -313,6 +315,35 @@ awerouter init step-glm      # needs STEPFUN_AUTH_TOKEN and GLM_API_KEY
 awerouter init glm-codex     # needs GLM_API_KEY, plus a ChatGPT subscription via codex login
 ```
 
+**step-glm-mm** — the multimodal sidekick, no smart split: a non-multimodal flagship (GLM 5.3 on the coding plan) does all the work, and only image-bearing requests go to a multimodal flash (StepFun step-3.7-flash). Same providers as step-glm; the settings do the inverting:
+
+```json
+"openai-chat": {
+  "stepfun": { "base_url": "https://api.stepfun.com/step_plan/v1",        "auth": "${STEPFUN_AUTH_TOKEN}" },
+  "glm":     { "base_url": "https://open.bigmodel.cn/api/coding/paas/v4", "auth": "${GLM_API_KEY}" }
+}
+```
+
+```json
+"settings": {
+  "imageModel": "flash",
+  "defaultModel": "pro"
+}
+```
+
+```json
+"destinations": {
+  "flash": "stepfun,step-3.7-flash",
+  "pro":   "glm,glm-5.3"
+}
+```
+
+```bash
+awerouter init step-glm-mm        # needs STEPFUN_AUTH_TOKEN and GLM_API_KEY
+```
+
+`imageModel: flash` moves the image guard to the multimodal model (it outranks tier labels and long context — a request pro cannot see must never reach pro); `defaultModel: pro` flips the cost-first fall-through, so everything text goes to the flagship. Background-tier tasks still ride flash. Prefer a single vendor? Point flash at GLM's own multimodal `glm-5.3-flash` (`https://open.bigmodel.cn/api/v1`) instead of StepFun — one line in each file.
+
 Backend model names drift (see the Codex account section) — renaming is a one-line change in routing.json.
 
 **routing.json** — strategy, no secrets (safe to commit):
@@ -345,7 +376,7 @@ Backend model names drift (see the Codex account section) — renaming is a one-
 }
 ```
 
-`settings` is optional (defaults: `flash`/`pro`). It maps the model ids CC sends for the background (Haiku) and think (Opus) tiers; every tool-keyed routing rule (L1 `webSearch` included) lives in `settings.toolRouting` — the legacy top-level `webSearchModel` still works as a fallback. The main loop uses `auto` — routed by difficulty by L3. Set these in your aweswitch profile: `ANTHROPIC_DEFAULT_HAIKU_MODEL=flash`, `ANTHROPIC_MODEL=auto`, `ANTHROPIC_DEFAULT_OPUS_MODEL=pro`.
+`settings` is optional (defaults: `flash`/`pro`). It maps the model ids CC sends for the background (Haiku) and think (Opus) tiers; every tool-keyed routing rule (L1 `webSearch` included) lives in `settings.toolRouting` — the legacy top-level `webSearchModel` still works as a fallback. `imageModel` re-aims the image guard (default `pro`; `flash` when pro is a non-multimodal flagship — see the step-glm-mm template) and `defaultModel` flips the cost-first fall-through (default `flash`; `pro` for pro-first profiles). The main loop uses `auto` — routed by difficulty by L3. Set these in your aweswitch profile: `ANTHROPIC_DEFAULT_HAIKU_MODEL=flash`, `ANTHROPIC_MODEL=auto`, `ANTHROPIC_DEFAULT_OPUS_MODEL=pro`.
 
 `longContextThreshold` is an integer, or `"auto"` to calibrate it from this profile's own traffic: at every `serve` start, awerouter takes the `percentile` of the profile's L3 effective-token distribution over the trailing `windowDays` as the threshold. With fewer than `minSamples` L3 requests in the window (fresh profile, quiet week) the `fallbackThreshold` applies instead. All four knobs live in `settings.longContextAuto` and are optional — the banner always prints what was picked and why. Note the percentile sets the flash/pro *split*, not flash's capability ceiling: if your flash model degrades on very long contexts, keep a manual threshold.
 
@@ -361,12 +392,12 @@ First-match-wins pipeline, evaluated per request:
 
 | Layer | Signal | Decision |
 |-------|--------|----------|
-| L1 Capability | `web_search` tool in body | `toolRouting.webSearch` (default **pro**; legacy `webSearchModel` still works) |
+| L1 Capability | `web_search` tool in body; image content present | `toolRouting.webSearch` (default **pro**; legacy `webSearchModel` still works); `settings.imageModel` (default **pro**) |
 | L2 Tier label | `model == c1/flash` or `c1/think` | flash / pro respectively |
-| L3 Difficulty | token count (all request content) > threshold, or has image | **pro**; else fall through |
+| L3 Difficulty | token count (all request content) > threshold | **pro**; else fall through |
 | L4 Edit checkpoint | trailing tool batch changed code (`edit`/`write`/`apply_patch`/...) | `toolRouting.edit` (default **pro**, `null` disables) |
 
-CC's `/model` picker sets the tier model id (c1/flash / c1/pro / c1/think). awerouter reads it and routes accordingly — no keyword parsing, no LLM classifier.
+CC's `/model` picker sets the tier model id (c1/flash / c1/pro / c1/think). awerouter reads it and routes accordingly — no keyword parsing, no LLM classifier. The image guard is a capability rule, not a difficulty guess: it sits above tier labels and long context, so with `imageModel: flash` an image-bearing request reaches the multimodal model no matter what tier it carries or how long it is (a model that cannot see images must never get them). Everything that matches no layer falls through to `settings.defaultModel` (default flash — cost-first).
 
 L4 is a consequence checkpoint, not a difficulty guess. Structure cannot see the turn that *decides* an edit — that turn routes by whatever came before it — but the turn right *after* code changed is the review turn (verify, continue, report), so it goes to pro: flash drafts, pro reviews. The signal is the **trailing parallel batch** of tool calls: any edit-class call in it marks the batch (`[Grep, Edit]` and `[Edit, Grep]` route identically). Shell-wrapped calls (codex `exec_command`/`shell`) are classified by their command text — `apply_patch` counts as edit. L4 sits below L3 on purpose — a session already above `longContextThreshold` stays pro no matter what tool just ran, so flash never sees contexts it may degrade on and the long-context crossing stays one-way flash→pro (below the threshold, edit-checkpoint turns go pro and later turns return to flash). Edit-class covers `Edit`/`Write`/`NotebookEdit`/`apply_patch`/`replace_in_file` and friends, matched case-insensitively. Earlier versions also routed search/mechanical phases to flash here; since flash is already the fall-through default, those rules changed nothing and were removed (v0.4.8).
 
@@ -398,7 +429,7 @@ Compression is inspired by [rtk](https://github.com/rtk-ai/rtk) (Apache 2.0) and
 ## Commands
 
 ```bash
-awerouter init [TEMPLATE]             # create config from a bundled template (default / step-glm / glm-codex)
+awerouter init [TEMPLATE]             # create config from a bundled template (default / step-glm / glm-codex / step-glm-mm)
 awerouter add                         # interactively add a profile (pick category and providers)
 awerouter list                        # list profiles (name, protocol, port, flash, pro, threshold)
 awerouter serve [PROFILE] [--port N] [--host 127.0.0.1]  # port: --port > profile 'port' > 20128

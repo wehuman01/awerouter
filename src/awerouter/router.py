@@ -4,9 +4,16 @@ First-match-wins pipeline over a precomputed InspectResult (extracted per
 protocol by awerouter.protocols):
 
   L1 Capability guard  — web_search tool declared -> toolRouting.webSearch (default pro)
+                         image content present    -> settings.imageModel (default pro)
   L2 Tier label match  — backgroundModel / thinkModel exact-match
-  L3 Difficulty score  — long context / image -> pro; default -> flash (cost-first)
+  L3 Difficulty score  — long context -> pro; default -> settings.defaultModel (default flash)
   L4 Consequence check — trailing tool batch changed code -> toolRouting.edit (default pro)
+
+The image guard sits in L1, above tier labels and difficulty, because image
+routing is a capability decision, not a difficulty guess: with imageModel
+flipped to flash (a non-multimodal flagship on pro), an image-bearing request
+must reach the multimodal model no matter what tier label it carries or how
+long it is.
 
 L4 is a consequence checkpoint, not a difficulty guess: structure cannot see
 the turn that decides an edit, but the turn right after code changed is the
@@ -33,16 +40,25 @@ def resolve(
     web_search_model: str = "pro",
     search_discount: float = 0.3,
     tool_edit_dest: str | None = "pro",
+    image_dest: str = "pro",
+    default_dest: str = "flash",
 ) -> ResolveResult:
     m = model or ""
 
-    # L1: capability guard ------------------------------------------------
+    # L1: capability guards ------------------------------------------------
     if feat.has_web_search:
         dest_key = web_search_model
         return ResolveResult(
             destination=dest_key,
             model=dests[dest_key].model,
             label="webSearch",
+            inspect=feat,
+        )
+    if feat.has_image:
+        return ResolveResult(
+            destination=image_dest,
+            model=dests[image_dest].model,
+            label="image",
             inspect=feat,
         )
 
@@ -73,13 +89,6 @@ def resolve(
             label="longContext",
             inspect=feat,
         )
-    if feat.has_image:
-        return ResolveResult(
-            destination="pro",
-            model=dests["pro"].model,
-            label="image",
-            inspect=feat,
-        )
 
     # L4: consequence checkpoint -------------------------------------------
     # The trailing tool batch changed code (Edit/Write/apply_patch/...): the
@@ -94,8 +103,8 @@ def resolve(
         )
 
     return ResolveResult(
-        destination="flash",
-        model=dests["flash"].model,
+        destination=default_dest,
+        model=dests[default_dest].model,
         label="default",
         inspect=feat,
     )

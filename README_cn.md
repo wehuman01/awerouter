@@ -120,7 +120,7 @@ pip install awerouter
 
 ```bash
 # 1. 初始化配置（生成 ~/.config/awerouter/{providers,routing}.json）
-awerouter init                # 也可选内置搭配：awerouter init step-glm / glm-codex（见「常见搭配模版」）
+awerouter init                # 也可选内置搭配：awerouter init step-glm / glm-codex / step-glm-mm（见「常见搭配模版」）
 
 # 2. 交互式添加 profile（自动写入两个文件，保证引用一致）
 awerouter add
@@ -133,6 +133,8 @@ awerouter serve [cc-router-1]     # 等价简写：awerouter cc-router-1
 export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 # aweswitch profile 环境变量：ANTHROPIC_MODEL=auto, _HAIKU_=flash, _OPUS_=pro
 ```
+
+内置模板源码位于 [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/)；`awerouter init <template>` 会将对应文件生成到你的配置目录。
 
 ## 配置
 
@@ -271,7 +273,7 @@ awerouter logout claude   # 删除本地登录
 
 ### 常见搭配模版
 
-`awerouter init` 支持内置模板名，一次生成配套的 `providers.json` + `routing.json`（不传名字即 `default`）。下面两套开箱即用；不想跑命令的话，手抄任意一段到自己的配置里也一样。密钥一律 `${ENV_VAR}` 占位，缺失的环境变量在启动时报错。
+`awerouter init` 支持内置模板名，一次生成配套的 `providers.json` + `routing.json`（不传名字即 `default`）。下面三套开箱即用；不想跑命令的话，手抄任意一段到自己的配置里也一样。密钥一律 `${ENV_VAR}` 占位，缺失的环境变量在启动时报错。
 
 **step-glm** —— 纯 API key 的国产双档：flash 走 StepFun step_plan，pro 走 GLM coding plan。面向说 openai-chat 协议的 agent：
 
@@ -313,6 +315,35 @@ awerouter init step-glm      # 需要设置 STEPFUN_AUTH_TOKEN 和 GLM_API_KEY
 awerouter init glm-codex     # 需要 GLM_API_KEY，且 codex login 登录过 ChatGPT 订阅
 ```
 
+**step-glm-mm** —— 多模态侧翼，不做智能分流：非多模态旗舰（GLM coding plan 的 glm-5.3）包揽全部主要工作，只有带图的请求交给多模态 flash（StepFun step-3.7-flash）。providers 与 step-glm 相同，反转全靠 settings：
+
+```json
+"openai-chat": {
+  "stepfun": { "base_url": "https://api.stepfun.com/step_plan/v1",        "auth": "${STEPFUN_AUTH_TOKEN}" },
+  "glm":     { "base_url": "https://open.bigmodel.cn/api/coding/paas/v4", "auth": "${GLM_API_KEY}" }
+}
+```
+
+```json
+"settings": {
+  "imageModel": "flash",
+  "defaultModel": "pro"
+}
+```
+
+```json
+"destinations": {
+  "flash": "stepfun,step-3.7-flash",
+  "pro":   "glm,glm-5.3"
+}
+```
+
+```bash
+awerouter init step-glm-mm        # 需要设置 STEPFUN_AUTH_TOKEN 和 GLM_API_KEY
+```
+
+`imageModel: flash` 把图片护栏改指多模态模型（它的优先级高于档位标签和长文本——pro 看不了的图绝不能送到 pro）；`defaultModel: pro` 翻转了默认兜底（原本 cost-first 落 flash），于是所有纯文本请求都走旗舰。后台档任务仍走 flash。想只用一家？把 flash 改成 GLM 自家的多模态 `glm-5.3-flash`（`https://open.bigmodel.cn/api/v1`）——两个文件各改一行。
+
 后端模型名会漂移（见「Codex 账号」一节）——改名只需动 routing.json 一行。
 
 **routing.json** — 路由策略，不含密钥（可以进 git）：
@@ -345,7 +376,7 @@ awerouter init glm-codex     # 需要 GLM_API_KEY，且 codex login 登录过 Ch
 }
 ```
 
-`settings` 可省（默认 `flash`/`pro`）。它定义 CC 发送的档位 model id：background（Haiku 档）、think（Opus 档）；所有按工具路由的规则（含 L1 的 `webSearch`）统一放在 `settings.toolRouting`——旧顶层 `webSearchModel` 仍作为兜底兼容。主循环用 `auto`——由 L3 按难度路由。在 aweswitch profile 里设：`ANTHROPIC_DEFAULT_HAIKU_MODEL=flash`、`ANTHROPIC_MODEL=auto`、`ANTHROPIC_DEFAULT_OPUS_MODEL=pro`。
+`settings` 可省（默认 `flash`/`pro`）。它定义 CC 发送的档位 model id：background（Haiku 档）、think（Opus 档）；所有按工具路由的规则（含 L1 的 `webSearch`）统一放在 `settings.toolRouting`——旧顶层 `webSearchModel` 仍作为兜底兼容。`imageModel` 重定向图片护栏（默认 `pro`；旗舰不支持多模态时改 `flash`，见 step-glm-mm 模版），`defaultModel` 翻转兜底去向（默认 `flash`；pro 优先的配置改 `pro`）。主循环用 `auto`——由 L3 按难度路由。在 aweswitch profile 里设：`ANTHROPIC_DEFAULT_HAIKU_MODEL=flash`、`ANTHROPIC_MODEL=auto`、`ANTHROPIC_DEFAULT_OPUS_MODEL=pro`。
 
 `longContextThreshold` 可以是整数，也可以写 `"auto"`：每次 `serve` 启动时，awerouter 取该 profile 自己最近 `windowDays` 天 L3 有效 token 分布的 `percentile` 分位值作为阈值。窗口内 L3 请求数不足 `minSamples`（新 profile、流量清淡）时改用 `fallbackThreshold`。四个参数都在 `settings.longContextAuto` 里，全部可选——横幅每次都会打印选了什么、依据是什么。注意：分位值决定的是 flash/pro 的*分配比例*，不代表 flash 的能力上限——如果你的 flash 模型在超长上下文上明显退化，请继续用固定阈值。
 
@@ -361,12 +392,12 @@ first-match-wins 管线，逐请求评估：
 
 | 层 | 信号 | 决策 |
 |----|------|------|
-| L1 能力护栏 | body 含 `web_search` 工具 | `toolRouting.webSearch`（默认 **pro**；旧顶层 `webSearchModel` 仍兼容） |
+| L1 能力护栏 | body 含 `web_search` 工具；含图片内容 | `toolRouting.webSearch`（默认 **pro**；旧顶层 `webSearchModel` 仍兼容）；`settings.imageModel`（默认 **pro**） |
 | L2 档位匹配 | `model == c1/flash` 或 `c1/think` | flash / pro |
-| L3 难度评分 | token（全部请求内容）超阈值，或含图片 | **pro**；否则继续 |
+| L3 难度评分 | token（全部请求内容）超阈值 | **pro**；否则继续 |
 | L4 编辑检查点 | 尾部工具批次改写了代码（`edit`/`write`/`apply_patch` 等） | `toolRouting.edit`（默认 **pro**，`null` 关闭） |
 
-CC 的 `/model` 选择器设置 tier model id（c1/flash / c1/pro / c1/think）。awerouter 直接读取该字段做路由——不猜语义、不用关键词、不跑分类器。
+CC 的 `/model` 选择器设置 tier model id（c1/flash / c1/pro / c1/think）。awerouter 直接读取该字段做路由——不猜语义、不用关键词、不跑分类器。图片护栏是能力规则而非难度猜测：排在档位标签和长文本之上，`imageModel: flash` 时带图请求无论档位多高、上下文多长都到多模态模型（看不见图的模型绝不能收到图）。所有层都不匹配的请求落到 `settings.defaultModel`（默认 flash——cost-first）。
 
 L4 是后果检查点，不是难度猜测。结构信号看不到*决定*编辑的那一轮——那一轮按它之前的信号路由——但代码刚被改写的**下一轮**是审查轮（验证、继续、交代），所以送 pro：flash 起草，pro 审查。信号取**尾部并行批次**：其中任何一个编辑类调用都会标记该批次（`[Grep, Edit]` 和 `[Edit, Grep]` 结果一致）。shell 包装的调用（codex 的 `exec_command`/`shell`）按命令文本分类——`apply_patch` 算编辑。它排在 L3 之下是刻意的——已超过 `longContextThreshold` 的会话无论刚跑了什么工具都留在 pro，flash 不会拿到可能退化的超长上下文，长上下文这一跨越也保持 flash→pro 单向（阈值以下：编辑检查点轮次走 pro，其余轮次回落 flash）。编辑类覆盖 `Edit`/`Write`/`NotebookEdit`/`apply_patch`/`replace_in_file` 等，大小写不敏感匹配。早期版本在这里还把搜索/机械阶段路由到 flash；由于 flash 本来就是兜底默认，这些规则不改变任何行为，v0.4.8 已移除。
 
@@ -398,7 +429,7 @@ L4 是后果检查点，不是难度猜测。结构信号看不到*决定*编辑
 ## 命令
 
 ```bash
-awerouter init [TEMPLATE]             # 从内置模板创建配置（default / step-glm / glm-codex）
+awerouter init [TEMPLATE]             # 从内置模板创建配置（default / step-glm / glm-codex / step-glm-mm）
 awerouter add                         # 交互式添加 profile（先选类别再选 provider）
 awerouter list                        # 列出 profile（名字、协议、端口、flash、pro、阈值）
 awerouter serve [PROFILE] [--port N] [--host 127.0.0.1]  # 端口优先级：--port > profile 'port' > 20128

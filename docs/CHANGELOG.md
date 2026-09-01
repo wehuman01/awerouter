@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+Multimodal sidekicks: image routing and the fall-through default become settings, enabling a pro-first profile where a non-multimodal flagship (GLM 5.3) does all the work and a multimodal flash (StepFun step-3.7-flash) takes only image-bearing requests — the new `step-glm-mm` template.
+
+### Added
+- `settings.imageModel` (default `pro`) and `settings.defaultModel` (default `flash`) in routing.json. `imageModel` re-aims the image guard; `defaultModel` flips the cost-first fall-through (`pro` = everything text goes to the flagship). Both validated to `flash`/`pro` at load, shown by `config show`, and printed on the serve banner when they deviate from defaults (`image -> ... default -> ...`, and `main -> pro` instead of `main -> auto`).
+- Bundled template `step-glm-mm` (`awerouter init step-glm-mm`): same providers as step-glm (openai-chat: flash = StepFun step_plan `step-3.7-flash`, pro = GLM coding plan `glm-5.3`) with `imageModel: flash` + `defaultModel: pro` — the "solve multimodal, skip smart routing" preset. README/README_cn document it under "Common setup templates" with the swap-flash-to-`glm-5.3-flash` variant; README.ai.md lists it.
+
+### Changed
+- The image check moved from L3 to L1 (right below web_search, above tier labels and long context): image routing is a capability decision, not a difficulty guess — with `imageModel: flash` an image-bearing request must reach the multimodal model no matter what tier label it carries or how long it is.
+
+### Behavior notes
+- At default settings the only observable change is label placement: a request with an image now labels `image` even when it also crossed `longContextThreshold` or carried a tier label. Destination-wise, a background-tier request containing an image now routes pro (was flash) — vision content is hard, and the "any image goes to imageModel, period" invariant is the one worth keeping.
+
 ## v0.5.1 - 2026-08-28
 
 Two additions on top of v0.5.0's codex story: Claude Pro/Max subscription logins become routing destinations on the Anthropic side, and routing setup gets bundled presets — `awerouter init step-glm` / `glm-codex` generate a matched providers + routing pair for known-good flash/pro combos in one shot.

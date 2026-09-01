@@ -5,7 +5,7 @@ import json
 from click.testing import CliRunner
 
 from awerouter.cli import _resolve_port, _run_serve, cli
-from awerouter.config import load_for_profile
+from awerouter.config import load_for_profile, load_routing
 
 
 def _setup(tmp_path, monkeypatch, providers=None, routing=None):
@@ -131,6 +131,21 @@ class TestInit:
         assert "template: glm-codex" in r.output
         routing = json.loads((tmp_path / "routing.json").read_text())
         assert routing["cc-router-1"]["protocol"] == "openai-responses"
+
+    def test_init_step_glm_mm_template(self, tmp_path, monkeypatch):
+        """The multimodal-sidekick template parses end-to-end: imageModel
+        flash, defaultModel pro, stepfun flash next to glm pro."""
+        _setup(tmp_path, monkeypatch)
+        r = CliRunner().invoke(cli, ["init", "step-glm-mm"])
+        assert r.exit_code == 0
+        routing = json.loads((tmp_path / "routing.json").read_text())
+        assert routing["settings"] == {"imageModel": "flash", "defaultModel": "pro"}
+        assert routing["cc-router-1"]["destinations"] == {
+            "flash": "stepfun,step-3.7-flash", "pro": "glm,glm-5.3"}
+        settings, profiles = load_routing()
+        assert settings.image_model == "flash"
+        assert settings.default_model == "pro"
+        assert profiles["cc-router-1"].protocol == "openai-chat"
 
     def test_init_unknown_template(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch)

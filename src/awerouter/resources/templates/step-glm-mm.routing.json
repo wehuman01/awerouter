@@ -1,0 +1,14 @@
+{
+  "settings": {
+    "imageModel": "flash",
+    "defaultModel": "pro"
+  },
+  "cc-router-1": {
+    "protocol": "openai-chat",
+    "longContextThreshold": 8000,
+    "destinations": {
+      "flash": "stepfun,step-3.7-flash",
+      "pro":   "glm,glm-5.3"
+    }
+  }
+}

@@ -103,7 +103,7 @@ Rules:
 ```
 
 Rules:
-- `settings` is optional. Tool-keyed rules live in `settings.toolRouting` (`webSearch`, `edit`); the legacy top-level `webSearchModel` still works. `longContextThreshold` is an integer or `"auto"` (calibrated from recent traffic per `settings.longContextAuto`).
+- `settings` is optional. Tool-keyed rules live in `settings.toolRouting` (`webSearch`, `edit`); the legacy top-level `webSearchModel` still works. `imageModel` (default pro) re-aims the image guard; `defaultModel` (default flash) flips the fall-through. `longContextThreshold` is an integer or `"auto"` (calibrated from recent traffic per `settings.longContextAuto`).
 - Each profile needs `protocol`, `longContextThreshold`, and `destinations`.
 - Supported protocols: `anthropic`, `openai-chat`, `openai-responses`.
 - Optional `"rtk": true` enables RTK tool-result compression (default off): verbose tool output (git diff/status/log, grep, listings, build logs) is compressed before forwarding. Fail-open, deterministic; error results and short content pass through. Per-request opt-out header: `X-Awerouter-Token-Saver: off`. After enabling, re-run `awerouter usage calibrate` (thresholds tuned on uncompressed traffic over-trigger pro).
@@ -115,13 +115,16 @@ awerouter evaluates requests in first-match-wins order:
 | Layer | Signal | Result |
 |-------|--------|--------|
 | L1 | `web_search` tool present | `toolRouting.webSearch` (default pro; legacy `webSearchModel` works) |
+| L1 | image present | `settings.imageModel` (default pro; flash for multimodal-sidekick profiles) |
 | L2 | tier model label (`c1/flash`, `c1/think`, or equivalent model mapping) | flash or pro |
-| L3 | long context (token count over all request content) or image present | pro if above threshold or image present |
+| L3 | long context (token count over all request content) | pro if above threshold |
 | L4 | trailing tool batch changed code (`edit`/`write`/`apply_patch`/...) | `toolRouting.edit` (default pro, `null` disables) |
+| — | nothing matched | `settings.defaultModel` (default flash) |
 
 Notes:
+- The image guard outranks tier labels and long context: a model that cannot see images must never receive them.
 - For Anthropic-style clients, tier labels come from the model id mapping.
-- For OpenAI-style clients, tier labels usually do not apply; routing is mostly L1 + L3 with a flash default.
+- For OpenAI-style clients, tier labels usually do not apply; routing is mostly L1 + L3 with the `defaultModel` fall-through.
 - `longContextThreshold` compares against all request content (messages, system prompt, tool definitions, tool I/O); calibrate from real traffic.
 
 ## Common Tasks
@@ -133,6 +136,7 @@ Run:
 awerouter init                    # 'default' template
 awerouter init step-glm           # key-only combo: flash=StepFun step_plan, pro=GLM coding plan
 awerouter init glm-codex          # flash=GLM coding plan, pro=ChatGPT subscription (auth: "codex")
+awerouter init step-glm-mm             # multimodal sidekick: pro=GLM glm-5.3 does everything, flash=StepFun step-3.7-flash takes images only
 ```
 
 Templates are `<name>.providers.json` + `<name>.routing.json` pairs; an unknown name fails with the list of available ones. This creates `providers.json` and `routing.json` if missing.

@@ -236,6 +236,8 @@ def _resolve_for_request(body: dict, profile, settings) -> ResolveResult:
         tr.web_search or settings.web_search_model,
         settings.search_result_discount,
         tr.edit,
+        settings.image_model,
+        settings.default_model,
     )
 
 
@@ -822,7 +824,10 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
         print(f"  rtk           -> on (tool-result compression)")
     print(f"  bg            -> {settings.background_model}  "
           f"think -> {settings.think_model}  "
-          f"main -> auto")
+          f"main -> {'auto' if settings.default_model == 'flash' else settings.default_model}")
+    if settings.image_model != "pro" or settings.default_model != "flash":
+        print(f"  image         -> {settings.image_model}  "
+              f"default -> {settings.default_model}")
     tr = settings.tool_routing
     parts = [f"web→{tr.web_search or settings.web_search_model}",
              *(f"{k}→{v}" for k, v in (("edit", tr.edit),) if v)]
