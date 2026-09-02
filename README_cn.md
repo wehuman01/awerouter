@@ -438,7 +438,7 @@ first-match-wins 管线，逐请求评估：
 
 | 层 | 信号 | 决策 |
 |----|------|------|
-| L1 能力护栏 | body 含 `web_search` 工具；含图片内容 | `toolRouting.webSearch`（默认 **pro**；旧顶层 `webSearchModel` 仍兼容）；`settings.imageModel`（默认 **pro**；开 `imageBridge` 后只有*本轮新传*的图才走这里——已转写的历史图片落到 `defaultModel`） |
+| L1 能力护栏 | body 含 `web_search` 工具；含图片内容 | `toolRouting.webSearch`（默认 **pro**；旧顶层 `webSearchModel` 仍兼容）；`settings.imageModel`（默认 **pro**；开 `imageBridge` 后只有*本轮新传*的图才走这里——已转写的历史图片照常走后续管线） |
 | L2 档位匹配 | `model == c1/flash` 或 `c1/think` | flash / pro |
 | L3 难度评分 | token（全部请求内容）超阈值 | **pro**；否则继续 |
 | L4 编辑检查点 | 尾部工具批次改写了代码（`edit`/`write`/`apply_patch` 等） | `toolRouting.edit`（默认 **pro**，`null` 关闭） |
@@ -451,7 +451,9 @@ L4 是后果检查点，不是难度猜测：代码刚被改写的**下一轮**�
 
 ## 图片桥接
 
-`settings.imageBridge: true`（opt-in，step-glm-mm 模版已开启）给纯文本的 pro 模型一双二手的眼睛：当请求里的图片只存在于*历史*——最后一条消息是纯文本——awerouter 先让多模态的 flash（`imageModel`）把每张不同的图片转写一次，再把图片块替换成转写文本后照常路由，会话因此落到 `defaultModel`（pro），而不是永远钉死在 flash 上。本轮新传的图片照旧原生路由给 flash；`/v1/messages/count_tokens` 看到的是同样的改写后请求体，估算与实发一致。转写按图片内容缓存在进程内存（重启后每张图重新转写一次）；任何一次转写失败，请求体保持原样，L1 图片护栏照旧路由。codex 订阅登录跳过桥接（其 SSE-only 后端无法服务非流式转写调用）。
+`settings.imageBridge: true`（opt-in，step-glm-mm 模版已开启）给纯文本的 pro 模型一双二手的眼睛：当请求里的图片只存在于*历史*——最后一条消息是纯文本——awerouter 先让多模态的 flash（`imageModel`）把每张不同的图片转写一次，再把图片块替换成转写文本后照常路由，请求回到正常管线——典型情况落到 `defaultModel`（pro）——而不是把会话永远钉死在 flash 上。本轮新传的图片照旧原生路由给 flash；`/v1/messages/count_tokens` 看到的是同样的改写后请求体，估算与实发一致。转写按图片内容缓存在进程内存（重启后每张图重新转写一次）；任何一次转写失败，请求体保持原样，L1 图片护栏照旧路由。codex 订阅登录跳过桥接（其 SSE-only 后端无法服务非流式转写调用）。
+
+`imageBridge` 和其他 settings 键一样，也可以只写在某个 profile 体内——当只有个别 profile 拥有多模态 `imageModel` 时就应该这么用（全局开启会让每个 profile 都用自己的 `imageModel` 去转写：纯文本的 imageModel 每次转写都会失败再回退，白白多付一次上游调用）。每张不同的图片多付一次 flash 调用（转写输出上限 2048 token）；第一个桥接轮承担延迟，之后命中缓存。serve 横幅会打印 `image bridge -> on (...)`，注明负责转写的 destination。
 
 ## Token Saver（RTK 省流）
 

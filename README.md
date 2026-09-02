@@ -438,7 +438,7 @@ First-match-wins pipeline, evaluated per request:
 
 | Layer | Signal | Decision |
 |-------|--------|----------|
-| L1 Capability | `web_search` tool in body; image content present | `toolRouting.webSearch` (default **pro**; legacy `webSearchModel` still works); `settings.imageModel` (default **pro**; with `imageBridge` on, only *fresh* images route here — bridged history falls through to `defaultModel`) |
+| L1 Capability | `web_search` tool in body; image content present | `toolRouting.webSearch` (default **pro**; legacy `webSearchModel` still works); `settings.imageModel` (default **pro**; with `imageBridge` on, only *fresh* images route here — bridged history falls through the normal pipeline) |
 | L2 Tier label | `model == c1/flash` or `c1/think` | flash / pro respectively |
 | L3 Difficulty | token count (all request content) > threshold | **pro**; else fall through |
 | L4 Edit checkpoint | trailing tool batch changed code (`edit`/`write`/`apply_patch`/...) | `toolRouting.edit` (default **pro**, `null` disables) |
@@ -451,7 +451,9 @@ All tool-keyed rules live in one block — `settings.toolRouting` (`webSearch`/`
 
 ## Image Bridge
 
-`settings.imageBridge: true` (opt-in; the step-glm-mm template turns it on) gives a text-only pro model a second-hand pair of eyes. When a request carries images only in *history* — the final message is text — awerouter first has the multimodal flash destination (`imageModel`) transcribe each distinct image once, then replaces the image blocks with the transcription text before routing, so the session falls through to `defaultModel` (pro) instead of being pinned to flash forever. A fresh upload this turn still routes to flash natively, and `/v1/messages/count_tokens` sees the same rewritten body, so estimates match what is sent. Transcriptions are cached by image content for the process lifetime (a restart re-transcribes each image once); if any caption call fails, the request keeps its original images and the L1 image guard routes it as before. Codex subscription logins skip the bridge (their SSE-only backend cannot serve a non-streaming caption call).
+`settings.imageBridge: true` (opt-in; the step-glm-mm template turns it on) gives a text-only pro model a second-hand pair of eyes. When a request carries images only in *history* — the final message is text — awerouter first has the multimodal flash destination (`imageModel`) transcribe each distinct image once, then replaces the image blocks with the transcription text before routing, so the request keeps routing normally — typically landing on `defaultModel` (pro) — instead of the session being pinned to flash forever. A fresh upload this turn still routes to flash natively, and `/v1/messages/count_tokens` sees the same rewritten body, so estimates match what is sent. Transcriptions are cached by image content for the process lifetime (a restart re-transcribes each image once); if any caption call fails, the request keeps its original images and the L1 image guard routes it as before. Codex subscription logins skip the bridge (their SSE-only backend cannot serve a non-streaming caption call).
+
+`imageBridge` is a settings key like any other, so it can also live in a single profile's body — the right place when only that profile has a multimodal `imageModel` (a global switch makes every profile transcribe via its own `imageModel`; a text-only one fails every caption call and falls back, one wasted upstream call per attempt). Each distinct image costs one extra flash call (caption capped at 2048 output tokens); the first bridged turn pays its latency, later ones hit the cache. The serve banner prints `image bridge -> on (...)` naming the transcribing destination.
 
 ## Token Saver (RTK)
 
