@@ -8,12 +8,19 @@ import re
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 from awerouter import __version__
 from awerouter.config import config_dir
 
 CHECK_INTERVAL_S = 24 * 60 * 60
 REMIND_INTERVAL_S = 24 * 60 * 60
+
+# Where agent CLIs project the awerouter skill (installed and owned by aweskill).
+SKILL_PATHS = (
+    Path.home() / ".agents" / "skills" / "awerouter" / "SKILL.md",
+    Path.home() / ".claude" / "skills" / "awerouter" / "SKILL.md",
+)
 
 
 def _parse_version(v):
@@ -94,6 +101,19 @@ def check_async(args):
     return get_result
 
 
+def skill_refresh_hint():
+    """Nudge to refresh the awerouter agent skill, or None when not installed.
+
+    The skill lives in the awerouter repo and is updated with it, but its
+    lifecycle on this machine belongs to aweskill — so awerouter only points
+    at the refresh command instead of writing the file itself.
+    """
+    if not any(p.exists() for p in SKILL_PATHS):
+        return None
+    return ("the awerouter skill is updated along with awerouter releases — refresh it "
+            "too, ideally by asking your coding agent: `aweskill update awerouter`")
+
+
 def _check():
     cache_path = _cache_path()
     cache = _load_cache(cache_path)
@@ -123,7 +143,11 @@ def _check():
         "lastReminded": now,
     })
 
-    return f"Update available: {__version__} → {latest}. Run `awerouter self-update` to update."
+    reminder = f"Update available: {__version__} → {latest}. Run `awerouter self-update` to update."
+    hint = skill_refresh_hint()
+    if hint:
+        reminder += "\n" + hint
+    return reminder
 
 
 def cached_update_hint() -> "str | None":

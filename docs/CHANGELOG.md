@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Skill refresh nudge: `awerouter self-update` (after a successful upgrade) and the daily update reminder now add one line when the awerouter agent skill is detected in `~/.agents/skills/` or `~/.claude/skills/` — the skill is updated along with awerouter releases, and refreshing it is best done by the coding agent itself: `aweskill update awerouter`. awerouter never writes the skill file: its lifecycle (store, projections, local-edit protection) belongs to aweskill, and the skill is not packaged in the wheel, so awerouter only points at the refresh command.
 
 ## v0.5.4
 

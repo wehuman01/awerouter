@@ -4,13 +4,9 @@
 
 有个事实，模型定价页从来不会告诉你：编程智能体每一轮都会把完整历史重发一遍。第 3 轮跑的那次 grep，到第 30 轮还一字不差地躺在请求里，而服务商就为它收了二十七次钱。
 
-awerouter 早就把简单的活儿派给了便宜的模型。可再便宜的模型，也不会对同一段 80 KB 的构建日志免单。路由管的是钱花在哪个模型上，管不了 token 本身有多少。
+awerouter 早就把简单的活儿派给了便宜的模型。可路由只管钱花在哪个模型上，管不了 token 本身有多少。同一段 80 KB 的构建日志，再便宜的模型也会收你二十七次钱。
 
-于是 awerouter 给出了自己的答案：RTK 压缩。它默认关闭——想用的时候，在 profile 里加一行 `"rtk": true`，冗长的工具输出——git diff、git status、grep 命中、目录树、文件读取内容、构建日志——就会在路由之前、计费之前被就地瘦身。同一个智能体，同一个会话，token 只剩零头。
-
-来源必须说清楚：这套压缩管线参考了 [rtk](https://github.com/rtk-ai/rtk)（Apache 2.0）和 [9router](https://github.com/decolua/9router) 的 JS 移植版（MIT），在 awerouter 里用 Python 从零重写。有一点不得不和它做得不一样——rtk 是本地 CLI，压缩前可以把原始输出落盘备份，猜错了还能找回；而代理只经手这串字节一次，没有回头路。没有退路，检测就必须更严，下面好几道护栏都是被这个约束逼出来的。
-
-下面说说它是怎么工作的——以及哪些细节，决定了它到底能不能真省下钱。
+于是有了 RTK 压缩。在 profile 里加一行 `"rtk": true`，git diff、grep 命中、目录树、构建日志这些冗长的工具输出，就会在路由之前、计费之前被就地瘦身。同一个会话，token 只剩零头。
 
 GitHub：[github.com/mugpeng/awerouter](https://github.com/mugpeng/awerouter)
 
@@ -80,13 +76,25 @@ awerouter usage savings
 - [awerouter：不怕deepseek 涨价，一句话让智能路由给你省钱](https://mp.weixin.qq.com/s/8jucVeQWQRjCIUEXxj-fHQ)
 - [awerouter 更新: 数据看板告诉你省了多少](https://mp.weixin.qq.com/s/V1tPgz-jEekAMRdLMzGZGQ)
 
-## 更多来自 mugpeng
+## Awesome 生态系统
 
-awerouter 是 aweteam 生态的一部分：
+aweshare 是一个不断壮大的 "awesome" 工具家族的一部分 — CLI 优先、本地优先，可由 AI agent 操作。
 
-- **[aweskill](https://aweskill.webioinfo.top/)** — CLI 优先的技能包管理器，支持 47+ AI 编程 agent
-- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Claude Code、Codex、OpenCode 的 agent 配置切换器
-- **[awerouter](https://github.com/mugpeng/awerouter)** — 智能路由器，用结构信号把请求分给 Flash 或 Pro 模型，减少不必要的模型开销
-- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — 收藏、分类、恢复 AI 编程会话，还能搭配aweswitch 实现保存配置，一键启动
-- **[aweshare](https://github.com/wehuman01/aweshare)** — 通过自建 Hub 共享本地 Ollama/vLLM 或已授权的 OpenAI/Anthropic 后端，实现token 的共享经济
-- **[awewarm](https://github.com/wehuman01/awewarm)** — 订阅窗口保持器，让 AI 编程套餐的窗口持续激活，无论是本地设置，还是通过远程连接的服务器
+### CLI 工具
+
+- **[aweskill](https://aweskill.webioinfo.top/)** — CLI 优先的技能包管理器，支持 47+ AI 编程 agent。
+- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Claude Code、Codex 和 OpenCode 的 agent 配置切换器。
+- **[awerouter](https://github.com/mugpeng/awerouter)** — 智能路由器，使用结构信号在 Flash 和 Pro 模型之间分配请求，减少不必要的模型开销。
+- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — 收藏、分类和恢复 AI 编程会话；与 aweswitch 配合保存配置并一键启动。
+- **[aweshare](https://github.com/wehuman01/aweshare)** — 通过自建 Hub 共享本地 Ollama/vLLM 后端、国内编程计划或授权的 OpenAI/Anthropic 订阅 — token 的共享经济。新增：`consumer list --ping` 为消费者提供每个产品的端到端证明（RESULT / TIME / DETAIL），`--ping-table` 在运行完成后呈现清晰的 FAIL/OK 摘要；hub 为每个消费者每天完成完整的 ping 循环（默认 10 次），可通过 `probeBudget` / `hub limits NAME --probe-budget N` 调整。
+- **[awewarm](https://github.com/wehuman01/awewarm)** — 订阅窗口保温器，保持 AI 编程套餐窗口激活，适用于本地设置和远程 hub 服务器。
+- **[awescholar](https://github.com/Webioinfo01/awescholar)** — 可由 AI agent 操作的科学文献发现和整理工具。
+
+### 桌面应用
+
+- **[awedot](https://awedot.wehuman.top/)** — 屏幕边缘的浮动球体跟踪当前 AI 会话：一键收藏，随时恢复，并可与 aweswitch 配合固定 agent 配置（例如使用 GLM 模型重新启动）。
+
+### 项目集合
+
+- **[Awesome AI Meets Biology](https://github.com/Webioinfo01/Awesome-AI-Meets-Biology)** — AI 在生物学、生物信息学和生物医学研究中应用的精选综述。由 awescholar 驱动。
+- **[Awesome AI Virtual Tumor](https://github.com/Webioinfo01/Awesome-AI-Virtual-Tumor)** — 用于虚拟肿瘤建模和模拟的最先进 AI 系统精选集合：静态模型、动态模型、agent、基准测试和综述。

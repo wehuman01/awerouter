@@ -38,6 +38,24 @@ class TestShouldSkip:
             assert not update_check._should_skip(args), args
 
 
+class TestSkillRefreshHint:
+    def _paths(self, tmp_path, installed):
+        skill = tmp_path / "awerouter" / "SKILL.md"
+        if installed:
+            skill.parent.mkdir(parents=True)
+            skill.write_text("# awerouter")
+        return (skill,)
+
+    def test_installed_skill_gets_hint(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(update_check, "SKILL_PATHS", self._paths(tmp_path, True))
+        hint = update_check.skill_refresh_hint()
+        assert hint and "aweskill update awerouter" in hint
+
+    def test_no_skill_no_hint(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(update_check, "SKILL_PATHS", self._paths(tmp_path, False))
+        assert update_check.skill_refresh_hint() is None
+
+
 class TestCheck:
     def test_newer_release_reminds_and_caches(self, tmp_path, monkeypatch):
         _config(tmp_path, monkeypatch)
@@ -47,6 +65,16 @@ class TestCheck:
         cache = json.loads((tmp_path / "update-check.json").read_text())
         assert cache["latestVersion"] == "99.0.0"
         assert cache["lastReminded"] > 0
+
+    def test_reminder_appends_skill_hint_when_installed(self, tmp_path, monkeypatch):
+        _config(tmp_path, monkeypatch)
+        monkeypatch.setattr(update_check, "get_pypi_latest", lambda: "99.0.0")
+        skill = tmp_path / "awerouter" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("# awerouter")
+        monkeypatch.setattr(update_check, "SKILL_PATHS", (skill,))
+        msg = update_check._check()
+        assert "self-update" in msg and "aweskill update awerouter" in msg
 
     def test_remind_interval_throttles(self, tmp_path, monkeypatch):
         _config(tmp_path, monkeypatch)
@@ -133,6 +161,8 @@ class TestSelfUpdateCommand:
     def test_update_runs_installer(self, tmp_path, monkeypatch):
         _config(tmp_path, monkeypatch)
         monkeypatch.setattr("awerouter.cli.get_pypi_latest", lambda: "99.0.0")
+        monkeypatch.setattr(update_check, "SKILL_PATHS",
+                            (tmp_path / "awerouter" / "SKILL.md",))  # not installed
         calls = []
 
         class Result:
@@ -147,3 +177,20 @@ class TestSelfUpdateCommand:
         assert r.exit_code == 0, r.output
         assert len(calls) == 1 and "awerouter" in calls[0]
         assert "Restart awerouter" in r.output
+        assert "aweskill update awerouter" not in r.output
+
+    def test_update_prints_skill_hint_when_installed(self, tmp_path, monkeypatch):
+        _config(tmp_path, monkeypatch)
+        monkeypatch.setattr("awerouter.cli.get_pypi_latest", lambda: "99.0.0")
+        skill = tmp_path / "awerouter" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("# awerouter")
+        monkeypatch.setattr(update_check, "SKILL_PATHS", (skill,))
+
+        class Result:
+            returncode = 0
+
+        monkeypatch.setattr("awerouter.cli.subprocess.run", lambda cmd, *a, **k: Result())
+        r = CliRunner().invoke(cli, ["self-update"])
+        assert r.exit_code == 0, r.output
+        assert "aweskill update awerouter" in r.output

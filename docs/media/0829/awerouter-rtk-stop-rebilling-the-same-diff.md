@@ -2,15 +2,11 @@
 
 ![awerouter](../../../logo/logo.png)
 
-Here is a fact about coding agents that pricing pages do not mention: an agent resends its entire history on every turn. The grep that ran in turn 3 is still sitting in the request at turn 30 — full text — and your provider bills it again, twenty-seven more times.
+Here is a fact that pricing pages never mention: every turn, a coding agent resends its entire history — full text, all of it. The grep from turn 3 sits untouched in the request at turn 30, and your provider bills for it twenty-seven more times.
 
-awerouter already sends the cheap traffic to cheap models. But even a cheap model charges for the same 80 KB of build log over and over. Routing fixes *where* tokens go; it does nothing about *how many* there are.
+awerouter already routes simple work to cheap models. But routing decides *where* tokens go — not *how many*. The same 80 KB build log gets billed over and over, even at the cheapest rate.
 
-So awerouter grew an answer: RTK compression. It ships off by default — when you want it, opt in per profile with `"rtk": true`, and verbose tool output — git diffs, git status, grep hits, directory trees, file-read dumps, build logs — gets rewritten in place, before routing, before the request is billed. Same agent, same session, a fraction of the tokens.
-
-Full credit where it is due: the compression pipeline is inspired by [rtk](https://github.com/rtk-ai/rtk) (Apache 2.0) and [9router](https://github.com/decolua/9router)'s JS port (MIT), reimplemented in Python from scratch. And it had to diverge in one respect — rtk is a local CLI that can tee raw output to disk before compressing, so a wrong guess is recoverable; a network proxy sees the bytes once. No recovery path means detection must be stricter, and that constraint shaped several of the guards below.
-
-Here is how it works — and which details decide whether it actually saves you money.
+So we added RTK compression. Enable it per profile with `"rtk": true`, and long tool outputs — git diffs, grep hits, directory listings, build logs — get compressed in place before routing and before billing. Same session, a fraction of the tokens.
 
 GitHub: [github.com/mugpeng/awerouter](https://github.com/mugpeng/awerouter)
 
@@ -80,12 +76,25 @@ One-line summary: the router used to decide where your tokens go — now it can 
 - [awerouter: No Fear of DeepSeek Price Hikes — One Sentence Lets Smart Routing Save You Money](https://mp.weixin.qq.com/s/8jucVeQWQRjCIUEXxj-fHQ)
 - [awerouter Update: The Dashboard Shows You Exactly How Much You Saved](https://mp.weixin.qq.com/s/V1tPgz-jEekAMRdLMzGZGQ)
 
-## More from mugpeng
+## Awesome Ecosystem
 
-awerouter is part of the aweteam ecosystem:
+aweshare is part of a growing family of "awesome" tools — CLI-first, local-first, and operable by AI agents.
 
-- **[aweskill](https://aweskill.webioinfo.top/)** — CLI-first skill package manager for 47+ AI coding agents
-- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Agent profile switcher for Claude Code, Codex, and OpenCode; launches sessions pointing at the awerouter daemon
-- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — AI coding session manager with profile-aware restoration
-- **[awerouter](https://github.com/mugpeng/awerouter)** — A smart LLM router that automatically directs agent requests to fast, low-cost Flash models or more capable Pro providers using structural signals, balancing cost, latency, and reasoning quality.
-- **[awescholar](https://github.com/Webioinfo01/awescholar)** — Automated scientific literature discovery and curation for Awesome lists.
+### CLI Tools
+
+- **[aweskill](https://aweskill.webioinfo.top/)** — CLI-first skill package manager supporting 47+ AI coding agents.
+- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Agent profile switcher for Claude Code, Codex, and OpenCode.
+- **[awerouter](https://github.com/mugpeng/awerouter)** — Smart router that splits requests between Flash and Pro models using structural signals, cutting unnecessary model spend.
+- **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — Bookmark, categorize, and restore AI coding sessions; pairs with aweswitch to save profiles and launch with one command.
+- **[aweshare](https://github.com/wehuman01/aweshare)** — Share local Ollama/vLLM backends, domestic coding plans, or authorized OpenAI/Anthropic subscriptions through a self-hosted hub — a sharing economy for tokens. New: `consumer list --ping` gives consumers end-to-end proof of every offering (RESULT / TIME / DETAIL), and `--ping-table` renders a clean FAIL/OK summary once the run completes; hub budgets complete ping cycles per consumer per day (default 10), tunable via `probeBudget` / `hub limits NAME --probe-budget N`.
+- **[awewarm](https://github.com/wehuman01/awewarm)** — Subscription window warmer that keeps AI coding-plan windows active, for local setups and through a remote hub server.
+- **[awescholar](https://github.com/Webioinfo01/awescholar)** — AI-agent-operable scientific literature discovery and curation.
+
+### Desktop Apps
+
+- **[awedot](https://awedot.wehuman.top/)** — A floating orb at your screen edge keeps track of the current AI session: bookmark it in one click, resume anytime, and pair with aweswitch to pin the agent's config (e.g., relaunch with the GLM model).
+
+### Project Collections
+
+- **[Awesome AI Meets Biology](https://github.com/Webioinfo01/Awesome-AI-Meets-Biology)** — A curated survey of AI applications in biology, bioinformatics, and biomedical research. Powered by awescholar.
+- **[Awesome AI Virtual Tumor](https://github.com/Webioinfo01/Awesome-AI-Virtual-Tumor)** — A curated collection of state-of-the-art AI systems for virtual tumor modeling and simulation: static models, dynamic models, agents, benchmarks, and reviews. 

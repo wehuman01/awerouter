@@ -34,7 +34,7 @@ from awerouter.config import (
 from awerouter.protocols import PROTOCOL_IDS, effective_tokens
 from awerouter.server import _serve
 from awerouter.types import AutoThresholdConfig
-from awerouter.update_check import _version_gte, get_pypi_latest
+from awerouter.update_check import _version_gte, get_pypi_latest, skill_refresh_hint
 
 # Attach config sub-group to the main cli group
 cli = config_cli
@@ -242,6 +242,9 @@ def self_update(check_only):
     result = subprocess.run(cmd)
     if result.returncode == 0:
         click.echo("Done. Restart awerouter (including running serve instances) to use the new version.")
+        hint = skill_refresh_hint()
+        if hint:
+            click.echo(hint)
     else:
         raise SystemExit(result.returncode)
 
