@@ -36,6 +36,38 @@ RTK 省了多少，从第一天起就在记录，可哪儿都不显示。现在�
 
 没压缩就什么都不打印。没开的功能，就该有没开的样子。
 
+## 开启后长什么样
+
+RTK 开了之后，你会在三处看到它。
+
+启动时 banner：
+```
+awerouter listening on 127.0.0.1:8765  [default]
+  protocol      -> anthropic
+  rtk           -> on (tool-result compression)
+```
+
+每次请求的 stdout（只有真正压了才打）：
+```
+[rtk] saved 14230/45800 chars (31.1%) via [grep] hits=1
+[rtk] saved 8400/12000 chars (70.0%) via [git-diff,smart-truncate] hits=2
+```
+
+`awerouter usage log` — 头部加每行尾部的标记：
+```
+search discount: 30%  |  total: 12,400  |  search: 0
+rtk: saved 700 input tokens (2/3 requests compressed)
+
+2026-08-29T10:00:00  a1b2c3d4e5f6  anthropic  claude  flash  ...  tokens=4200  in=3800  rtk=+500
+2026-08-29T10:01:00  f6e5d4c3b2a1  anthropic  claude  flash  ...  tokens=2100  in=1500
+```
+
+`awerouter usage savings` — 底部多出一段：
+```
+rtk compression (input trimmed before billing, stacks with flash offload):
+  saved 700 input tokens across 2 requests
+```
+
 ## 三条底线：出错放行、随时退出、重新校准
 
 - **出错放行**：压缩全程裹着一层保护，内部出任何错都退回原文。压缩器可以省得少，但绝不能弄坏请求。
@@ -75,6 +107,9 @@ awerouter usage savings
 
 - [awerouter：不怕deepseek 涨价，一句话让智能路由给你省钱](https://mp.weixin.qq.com/s/8jucVeQWQRjCIUEXxj-fHQ)
 - [awerouter 更新: 数据看板告诉你省了多少](https://mp.weixin.qq.com/s/V1tPgz-jEekAMRdLMzGZGQ)
+- [awerouter设计哲学1：一个路由器，三种协议](https://mp.weixin.qq.com/s/Ko7RlXq0JxLs7NHjrYQvGA)
+
+
 
 ## Awesome 生态系统
 
@@ -86,7 +121,7 @@ aweshare 是一个不断壮大的 "awesome" 工具家族的一部分 — CLI 优
 - **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Claude Code、Codex 和 OpenCode 的 agent 配置切换器。
 - **[awerouter](https://github.com/mugpeng/awerouter)** — 智能路由器，使用结构信号在 Flash 和 Pro 模型之间分配请求，减少不必要的模型开销。
 - **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — 收藏、分类和恢复 AI 编程会话；与 aweswitch 配合保存配置并一键启动。
-- **[aweshare](https://github.com/wehuman01/aweshare)** — 通过自建 Hub 共享本地 Ollama/vLLM 后端、国内编程计划或授权的 OpenAI/Anthropic 订阅 — token 的共享经济。新增：`consumer list --ping` 为消费者提供每个产品的端到端证明（RESULT / TIME / DETAIL），`--ping-table` 在运行完成后呈现清晰的 FAIL/OK 摘要；hub 为每个消费者每天完成完整的 ping 循环（默认 10 次），可通过 `probeBudget` / `hub limits NAME --probe-budget N` 调整。
+- **[aweshare](https://github.com/wehuman01/aweshare)** — 通过自建 Hub 共享本地 Ollama/vLLM 后端、国内编程计划或授权的 OpenAI/Anthropic 订阅 — token 的共享经济。
 - **[awewarm](https://github.com/wehuman01/awewarm)** — 订阅窗口保温器，保持 AI 编程套餐窗口激活，适用于本地设置和远程 hub 服务器。
 - **[awescholar](https://github.com/Webioinfo01/awescholar)** — 可由 AI agent 操作的科学文献发现和整理工具。
 

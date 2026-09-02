@@ -36,6 +36,38 @@ RTK savings were logged from day one and shown nowhere. Now every usage view car
 
 Nothing prints when nothing was compressed. A feature that is off should look off.
 
+## What It Looks Like
+
+When RTK is on, you see it in three places.
+
+Start-up banner:
+```
+awerouter listening on 127.0.0.1:8765  [default]
+  protocol      -> anthropic
+  rtk           -> on (tool-result compression)
+```
+
+Per-request stdout (only when something was actually compressed):
+```
+[rtk] saved 14230/45800 chars (31.1%) via [grep] hits=1
+[rtk] saved 8400/12000 chars (70.0%) via [git-diff,smart-truncate] hits=2
+```
+
+`awerouter usage log` — header plus a tag on each row:
+```
+search discount: 30%  |  total: 12,400  |  search: 0
+rtk: saved 700 input tokens (2/3 requests compressed)
+
+2026-08-29T10:00:00  a1b2c3d4e5f6  anthropic  claude  flash  ...  tokens=4200  in=3800  rtk=+500
+2026-08-29T10:01:00  f6e5d4c3b2a1  anthropic  claude  flash  ...  tokens=2100  in=1500
+```
+
+`awerouter usage savings` — an extra block at the bottom:
+```
+rtk compression (input trimmed before billing, stacks with flash offload):
+  saved 700 input tokens across 2 requests
+```
+
 ## The Contract: Fail Open, Opt Out, Recalibrate
 
 - **Fail open**: compression is wrapped so that any internal error returns the original text. A compressor may under-save; it must never break a request.
@@ -86,7 +118,7 @@ aweshare is part of a growing family of "awesome" tools — CLI-first, local-fir
 - **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Agent profile switcher for Claude Code, Codex, and OpenCode.
 - **[awerouter](https://github.com/mugpeng/awerouter)** — Smart router that splits requests between Flash and Pro models using structural signals, cutting unnecessary model spend.
 - **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — Bookmark, categorize, and restore AI coding sessions; pairs with aweswitch to save profiles and launch with one command.
-- **[aweshare](https://github.com/wehuman01/aweshare)** — Share local Ollama/vLLM backends, domestic coding plans, or authorized OpenAI/Anthropic subscriptions through a self-hosted hub — a sharing economy for tokens. New: `consumer list --ping` gives consumers end-to-end proof of every offering (RESULT / TIME / DETAIL), and `--ping-table` renders a clean FAIL/OK summary once the run completes; hub budgets complete ping cycles per consumer per day (default 10), tunable via `probeBudget` / `hub limits NAME --probe-budget N`.
+- **[aweshare](https://github.com/wehuman01/aweshare)** — Share local Ollama/vLLM backends, domestic coding plans, or authorized OpenAI/Anthropic subscriptions through a self-hosted hub — a sharing economy for tokens.
 - **[awewarm](https://github.com/wehuman01/awewarm)** — Subscription window warmer that keeps AI coding-plan windows active, for local setups and through a remote hub server.
 - **[awescholar](https://github.com/Webioinfo01/awescholar)** — AI-agent-operable scientific literature discovery and curation.
 
