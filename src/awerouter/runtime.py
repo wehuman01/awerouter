@@ -104,6 +104,9 @@ def register(profile_name: str, protocol: str, port: int, host: str,
         "port": port,
         "host": host,
         "background": background,
+        # Set by the resident-service launch (launchd/systemd) so status/stop
+        # route this instance through the service manager instead of SIGTERM.
+        "service": os.environ.get("AWEROUTER_SERVICE", ""),
         "started": time.time(),
     }) + "\n", encoding="utf-8")
 
@@ -149,8 +152,13 @@ def _prune(f: Path) -> None:
         pass
 
 
-def stop_instances(profile: "str | None" = None) -> list:
+def stop_instances(profile: "str | None" = None, services: bool = False) -> list:
     """SIGTERM matching instances and wait briefly for exit.
+
+    services=False (the default) targets plain foreground/background instances
+    only — resident-service instances (registration 'service' set) are stopped
+    through the service manager (awerouter.service.stop), since a SIGTERM
+    would be instantly undone by the restart policy.
 
     Returns the signaled instances; each still carries its registration
     fields — the caller re-checks pid_alive() to report "still shutting
@@ -159,6 +167,8 @@ def stop_instances(profile: "str | None" = None) -> list:
     stopped = []
     for inst in list_instances():
         if profile is not None and inst["profile"] != profile:
+            continue
+        if bool(inst.get("service")) != services:
             continue
         pid = inst["pid"]
         if not _is_awerouter_process(pid):

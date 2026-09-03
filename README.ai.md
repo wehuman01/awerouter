@@ -241,9 +241,10 @@ Tell the user to start the daemon themselves:
 ```bash
 awerouter serve run [profile-name]          # foreground
 awerouter serve run [profile-name] -d       # background: survives the terminal, log in ~/.local/state/awerouter/serve-<profile>.log
+awerouter serve run [profile-name] --install  # resident service: starts at login, survives reboots/crashes (launchd / systemd user unit)
 ```
 
-If only one routing profile exists, the profile name is optional. Either way, `awerouter serve status` shows every running instance (foreground and background) and `awerouter serve stop [PROFILE]` stops them. Config edits (routing.json / providers.json) hot-reload without a restart — a broken file keeps the previous config serving until it parses again.
+If only one routing profile exists, the profile name is optional. Either way, `awerouter serve status` shows every running instance (foreground, background, and resident). Resident instances show as `svc:launchd` / `svc:systemd`; `awerouter serve stop [PROFILE]` stops them through the service manager (a plain SIGTERM would be instantly undone by the restart policy) — they return at the next login; `awerouter serve stop [PROFILE] --purge` also removes the service file so they never start again. Config edits (routing.json / providers.json) hot-reload without a restart — a broken file keeps the previous config serving until it parses again.
 
 ---
 

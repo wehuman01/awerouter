@@ -188,6 +188,23 @@ Explain the output plainly; do not promise exact billing because output tokens a
 
 Use `awerouter usage tokens` to show input-token totals by content type (messages, system prompt, tools, tool I/O); `awerouter usage log --tokens` shows the same breakdown per request.
 
+### Run a resident service (start at login / survive reboot)
+
+Use:
+```bash
+awerouter serve run <profile> --install   # install launchd/systemd service and start it now
+awerouter serve status                    # shows svc:launchd or svc:systemd for resident instances
+awerouter serve stop <profile>            # stops the running instance (returns at next login)
+awerouter serve stop <profile> --purge    # stops and removes the service (no more auto-start)
+awerouter serve all --install             # gateway mode resident service
+```
+
+Notes:
+- `--install` implies background mode. Re-running it updates host/port/env and restarts the service.
+- The service manager starts the daemon without your shell environment. awerouter bakes `${VAR}` values referenced by `providers.json` (plus `AWEROUTER_*` and proxy vars) into the service file (mode 0600). If a variable the target needs is unset, install fails up front; set it, reload the shell, and re-run `--install`.
+- `serve stop` routes resident instances through the service manager (plain SIGTERM would be instantly undone by the restart policy). `--purge` removes the service file; without it, the instance comes back at the next login.
+- These commands are POSIX-only.
+
 ## Pitfalls
 
 - Loopback proxy hijack: shell proxy env without `no_proxy=127.0.0.1,localhost` can cause empty `502` errors.

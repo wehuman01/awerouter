@@ -130,6 +130,9 @@ awerouter add
 awerouter serve run [cc-router-1]  # 等价简写：awerouter cc-router-1 | awerouter serve cc-router-1
 #    加 -d 后台常驻运行：awerouter serve run cc-router-1 -d
 #    （终端关掉也不停；日志：~/.local/state/awerouter/serve-<profile>.log）
+#    或 --install 装成常驻系统服务，开机自启（重启、崩溃都自动恢复）：
+#    awerouter serve run cc-router-1 --install
+#    （终端关掉也不停；日志：~/.local/state/awerouter/serve-<profile>.log）
 
 # 4. 让 CC 指向它 —— serve 启动横幅会直接打印下面这两行
 export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
@@ -499,14 +502,16 @@ L4 是后果检查点，不是难度猜测：代码刚被改写的**下一轮**�
 
 `awerouter serve run <profile> -d` 让单 profile daemon 脱离终端常驻运行——终端关掉也不停，输出追加到 `~/.local/state/awerouter/serve-<profile>.log`（每个 profile 一个文件）。`awerouter serve all -d` 同样后台运行网关，日志为 `serve-gateway.log`，用 `awerouter serve stop gateway` 停止。两种命令都会等 daemon 绑定端口后打印 pid、端口和日志路径；已经在跑时会提示（仍然照常再起一个实例）。
 
+`--install`（代替或配合 `-d`）再进一步：把 daemon 装成**常驻系统服务**——macOS 是 launchd 代理（`~/Library/LaunchAgents/com.awerouter.serve.<profile>.plist`），Linux 是 systemd 用户服务（`~/.config/systemd/user/awerouter-<profile>.service`）。开机登录自动启动（重启电脑不用重新运行），进程崩溃自动拉活。安装前会先停掉同 profile 的现有实例（一个端口一个属主）。服务管理器启动的 daemon 没有你的 shell 环境，而 `${VAR}` 认证在请求时才从环境展开——所以安装时会把 providers 引用的 `${VAR}` 当前值（连同 `AWEROUTER_*` 覆盖和代理变量）烘焙进服务文件（权限 0600，含密钥）；目标 profile 需要的变量在当前 shell 没有值时安装直接报错。改了这些变量后重跑一次 `--install` 即可刷新（host/port/env 的更新也是重跑 `--install`）。
+
 每个 serve 实例——无论前台还是后台——绑定端口时都会在 `~/.local/state/awerouter/run/` 注册自己，因此一条命令就能看到全部实例：
 
 ```bash
-awerouter serve status           # profile、fg/bg、pid、host:port、协议、运行时长
+awerouter serve status           # profile、fg/bg/svc、pid、host:port、协议、运行时长
 awerouter serve stop [PROFILE]   # SIGTERM 全部实例，或只停某个 profile 的（优雅退出）
 ```
 
-注册文件按 pid 命名；进程已不存在的条目会自动清理。`serve stop` 拒绝向命令行已不像 awerouter 的 pid 发信号（进程被 -9 杀死后 pid 被复用的保护）。`-d`/`serve stop` 仅支持 POSIX 系统。
+常驻实例显示为 `svc:launchd` / `svc:systemd`。`serve stop` 对它们走服务管理器停止（直接 SIGTERM 会被重启策略立刻拉回来）——停的是当次，下次登录还会自启；`awerouter serve stop [PROFILE] --purge` 连服务文件一起删掉，从此不再自启。已安装但当前没在跑的服务也会列在 `serve status` 里。注册文件按 pid 命名；进程已不存在的条目会自动清理。`serve stop` 拒绝向命令行已不像 awerouter 的 pid 发信号（进程被 -9 杀死后 pid 被复用的保护）。`-d`/`--install`/`serve stop` 仅支持 POSIX 系统。
 
 serve 还会监听 `routing.json` 和 `providers.json` 的修改（每秒轮询 mtime）并热加载：destinations、阈值、tool routing、settings 覆盖、provider 条目——包括整体换掉 profile 的 provider——都无需重启、下一条请求即生效。文件加载失败（保存到一半、JSON 写坏）只提示一次，上一份可用配置继续服务，直到文件重新可解析；唯一不能热加载的是监听端口——改了 `port` 字段，serve 会打印需要重启的提示而不是重绑。
 
@@ -516,10 +521,10 @@ serve 还会监听 `routing.json` 和 `providers.json` 的修改（每秒轮询 
 awerouter init [TEMPLATE]             # 从内置模板创建配置（default / step-glm / glm-codex / step-glm-mm）；--merge 把模板补进已有配置
 awerouter add                         # 交互式添加 profile（先选类别再选 provider）
 awerouter list                        # 列出 profile（名字、协议、端口、flash、pro、阈值）
-awerouter serve run [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # 单 profile；端口：--port > profile 'port' > 20128
-awerouter serve all [--port N] [--host 127.0.0.1] [-d]            # 网关：所有 profile 共用一个端口，模型名为 <profile>/auto|flash|pro
-awerouter serve status                # 查看运行中的 serve 实例（前台 + 后台）
-awerouter serve stop [PROFILE]        # 停止全部运行实例，或只停某个 profile 的
+awerouter serve run [PROFILE] [--port N] [--host 127.0.0.1] [-d] [--install]  # 单 profile；端口：--port > profile 'port' > 20128
+awerouter serve all [--port N] [--host 127.0.0.1] [-d] [--install]            # 网关：所有 profile 共用一个端口，模型名为 <profile>/auto|flash|pro
+awerouter serve status                # 查看运行中的 serve 实例（前台 + 后台 + 常驻服务）
+awerouter serve stop [PROFILE] [--purge]  # 停止全部运行实例，或只停某个 profile 的；--purge 连常驻服务一起移除
 awerouter <PROFILE>                   # serve run 的简写（同样支持 -d）
 awerouter self-update [--check]        # 升级到最新 PyPI 版本（--check：只看版本不升级）
 awerouter config path                 # 打印两个配置文件路径

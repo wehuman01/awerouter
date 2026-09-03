@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+Resident services: `awerouter serve run <profile> --install` runs the daemon as a launchd agent on macOS or a systemd user unit on Linux. It starts at login (survives a reboot), relaunches after a crash, and `awerouter serve stop [PROFILE] [--purge]` controls it through the service manager instead of SIGTERM. The service bakes `${VAR}` auth values plus `AWEROUTER_*` and proxy variables into the file (mode 0600) because the service manager starts the daemon without your shell environment; missing referenced variables fail the install up front. Re-installing is the update path for host/port/env. `serve status` shows resident instances as `svc:launchd` / `svc:systemd` and lists installed-but-stopped services too. `awerouter serve all --install` covers gateway mode.
+
+### Added
+- `awerouter serve run [PROFILE] --install` and `awerouter serve all --install`: resident service install with env baking, startup-at-login, and crash relaunch. Idempotent re-install updates the job and restarts it.
+- `awerouter serve stop [PROFILE] --purge`: stops the resident instance and removes its service file so it no longer starts at login; plain `serve stop` stops the running instance but leaves it installed.
+- `serve status` resident-service awareness: running instances show `svc:launchd` / `svc:systemd`; installed-but-stopped services are listed with a remove hint.
+- `awerouter.service` module: platform-aware service file generation (launchd plist / systemd user unit), install/stop/purge commands, env capture from `providers.json` `${VAR}` references, and installed-service discovery from the file names/command lines.
+- Runtime registration now records the service manager kind (`AWEROUTER_SERVICE`) so resident instances route through the service manager on stop.
+- Test coverage for service file generation, env baking, missing-variable failure, install/stop/purge flows, status resident-mode display, and plain vs resident instance split (`tests/test_service.py`).
+
 ## v0.5.6
 
 Gateway mode: `awerouter serve all` turns all routing.json profiles into one local endpoint. A request model name selects the profile (`<profile>/auto|flash|pro`, e.g. `step-glm/auto`); `GET /v1/models` advertises every alias. The existing `serve run <profile>` model remains unchanged, so users can migrate one client at a time or run both forms concurrently.

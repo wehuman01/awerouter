@@ -130,6 +130,8 @@ awerouter add
 awerouter serve run [cc-router-1]  # shorthands: awerouter cc-router-1 | awerouter serve cc-router-1
 #    add -d to run it in the background: awerouter serve run cc-router-1 -d
 #    (survives the terminal; log: ~/.local/state/awerouter/serve-<profile>.log)
+#    or --install to run it as a resident service that also starts at login
+#    (survives reboots and crashes): awerouter serve run cc-router-1 --install
 
 # 4. Point CC at it — the serve banner prints both lines below
 export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
@@ -499,14 +501,16 @@ Compression is inspired by [rtk](https://github.com/rtk-ai/rtk) (Apache 2.0) and
 
 `awerouter serve run <profile> -d` runs one profile detached — it keeps serving after the terminal closes, logging to `~/.local/state/awerouter/serve-<profile>.log` (append; one file per profile). `awerouter serve all -d` does the same for the gateway (log: `serve-gateway.log`; stop it with `awerouter serve stop gateway`). Both commands wait for the daemon to bind and print its pid, port, and log path; an already-running target is noted (another instance still starts).
 
+`--install` (instead of or alongside `-d`) goes one step further and runs the daemon as a **resident service** — a launchd agent on macOS (`~/Library/LaunchAgents/com.awerouter.serve.<profile>.plist`) or a systemd user unit on Linux (`~/.config/systemd/user/awerouter-<profile>.service`). It starts at login, so a reboot needs no re-run, and relaunches after a crash. The service replaces any running instance of the same profile first. Since the service manager starts the daemon without your shell environment, install bakes the `${VAR}` values your providers reference (plus `AWEROUTER_*` overrides and proxy variables) into the service file — mode 0600, secrets included — and dies up front if a referenced variable the target needs has no value in the current shell; after changing those variables, re-run `--install` to refresh them (re-installing is the update path for host/port/env too).
+
 Every serve instance — foreground or background — registers itself under `~/.local/state/awerouter/run/` at bind time, so one command sees them all:
 
 ```bash
-awerouter serve status           # profile, fg/bg, pid, host:port, protocol, uptime
+awerouter serve status           # profile, fg/bg/svc, pid, host:port, protocol, uptime
 awerouter serve stop [PROFILE]   # SIGTERM all instances, or one profile's (graceful shutdown)
 ```
 
-Registration files are keyed by pid; entries whose process no longer exists are pruned automatically, and `serve stop` refuses to signal a pid whose command line no longer looks like awerouter (a reused pid after an unclean kill). `-d`/`serve stop` are POSIX-only.
+Resident instances show as `svc:launchd` / `svc:systemd`. `serve stop` stops them through the service manager (a plain SIGTERM would be instantly undone by the restart policy) — they return at the next login; `awerouter serve stop [PROFILE] --purge` also removes the service file so they never start again. An installed-but-stopped service is listed by `serve status`. Registration files are keyed by pid; entries whose process no longer exists are pruned automatically, and `serve stop` refuses to signal a pid whose command line no longer looks like awerouter (a reused pid after an unclean kill). `-d`/`--install`/`serve stop` are POSIX-only.
 
 Serve also watches `routing.json` and `providers.json` (1s mtime poll) and hot-reloads changes: destinations, thresholds, tool routing, settings overrides, provider entries — even switching the profile's providers — apply to the next request without a restart. A file that fails to load (mid-save partial write, broken JSON) is announced once and the previous config keeps serving until the file parses again; the one thing a reload cannot do is rebind the listen port — change the `port` field and serve prints a restart hint instead.
 
@@ -516,10 +520,10 @@ Serve also watches `routing.json` and `providers.json` (1s mtime poll) and hot-r
 awerouter init [TEMPLATE]             # create config from a bundled template (default / step-glm / glm-codex / step-glm-mm); --merge fills it into an existing config
 awerouter add                         # interactively add a profile (pick category and providers)
 awerouter list                        # list profiles (name, protocol, port, flash, pro, threshold)
-awerouter serve run [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # one profile; port: --port > profile 'port' > 20128
-awerouter serve all [--port N] [--host 127.0.0.1] [-d]            # gateway: every profile on one port, model = <profile>/auto|flash|pro
-awerouter serve status                # running serve instances (foreground + background)
-awerouter serve stop [PROFILE]        # stop all running instances, or one profile's
+awerouter serve run [PROFILE] [--port N] [--host 127.0.0.1] [-d] [--install]  # one profile; port: --port > profile 'port' > 20128
+awerouter serve all [--port N] [--host 127.0.0.1] [-d] [--install]            # gateway: every profile on one port, model = <profile>/auto|flash|pro
+awerouter serve status                # running serve instances (foreground + background + resident)
+awerouter serve stop [PROFILE] [--purge]  # stop all running instances, or one profile's; --purge also removes the resident service
 awerouter <PROFILE>                   # shorthand for serve run PROFILE (also takes -d)
 awerouter self-update [--check]        # upgrade to the latest PyPI release (--check: versions only)
 awerouter config path                 # print both config file paths

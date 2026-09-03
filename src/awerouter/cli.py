@@ -16,6 +16,7 @@ import click
 
 from awerouter import __version__
 from awerouter import runtime
+from awerouter import service
 from awerouter.config import (
     DEFAULT_PORT,
     ProfileGroup,
@@ -111,15 +112,22 @@ def serve():
 @click.option("-d", "--background", is_flag=True, default=False,
               help="Detach and keep running after the terminal closes "
                    "(output -> serve-<profile>.log in the state dir).")
-def run(profile, port: int, host: str, background: bool):
+@click.option("--install", is_flag=True, default=False,
+              help="Run as a resident service instead: starts at login (survives a "
+                   "reboot), relaunches after a crash (launchd / systemd user unit). "
+                   "Implies -d; re-run to update host/port/env. POSIX only.")
+def run(profile, port: int, host: str, background: bool, install: bool):
     """Start the awerouter daemon for PROFILE.
 
     PROFILE is a profile id from routing.json. If omitted, auto-selects when only
     one profile exists. Config changes (routing.json / providers.json) hot-reload
-    without a restart. With -d the daemon runs in the background; see
-    `awerouter serve status` and `awerouter serve stop`.
+    without a restart. With -d the daemon runs in the background; with --install
+    it runs as a resident service that also starts at login and survives reboots.
+    See `awerouter serve status` and `awerouter serve stop`.
     """
-    if background:
+    if install:
+        _install_background(profile, port, host)
+    elif background:
         _start_background(profile, port, host)
     else:
         _run_serve(profile, port, host)
@@ -132,16 +140,23 @@ def run(profile, port: int, host: str, background: bool):
 @click.option("-d", "--background", is_flag=True, default=False,
               help="Detach and keep running after the terminal closes "
                    "(output -> serve-gateway.log in the state dir).")
-def serve_all_cmd(port: int, host: str, background: bool):
+@click.option("--install", is_flag=True, default=False,
+              help="Run as a resident service instead: starts at login (survives a "
+                   "reboot), relaunches after a crash (launchd / systemd user unit). "
+                   "Implies -d; re-run to update host/port/env. POSIX only.")
+def serve_all_cmd(port: int, host: str, background: bool, install: bool):
     """Start ONE daemon serving EVERY profile on a single port.
 
     The request's model name picks the profile: '<profile>/auto|flash|pro'
     (e.g. step-glm/auto — see GET /v1/models). Bare names (auto/flash/pro)
     route to the profile named by routing.json's top-level 'defaultProfile',
     or the only profile when there is just one. Config changes hot-reload
-    without a restart; `awerouter serve stop gateway` stops it.
+    without a restart; `awerouter serve stop gateway` stops it. With
+    --install the gateway runs as a resident service (starts at login).
     """
-    if background:
+    if install:
+        _install_background(None, port, host, gateway=True)
+    elif background:
         _start_background_gateway(port, host)
     else:
         _run_serve_gateway(port, host)
@@ -238,7 +253,7 @@ def _start_background_gateway(port, host: str) -> None:
     print(f"awerouter gateway running in background (pid {inst['pid']})")
     print(f"  listening -> {inst['host']}:{inst['port']}  [{inst['protocol']}]")
     print(f"  log       -> {log}")
-    print(f"  manage    -> awerouter serve status | awerouter serve stop gateway")
+    print("  manage    -> awerouter serve status | awerouter serve stop gateway")
 
 
 def _log_tail(log: Path, lines: int = 15) -> str:
@@ -246,6 +261,62 @@ def _log_tail(log: Path, lines: int = 15) -> str:
         return "\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
     except OSError:
         return ""
+
+
+def _install_background(profile, port, host: str, gateway: bool = False) -> None:
+    """`serve run/all --install`: resident service via launchd/systemd.
+
+    The service replaces any running instance of the same target first (one
+    port, one owner), then installs the job and waits for its registration —
+    same contract as `-d` plus start-at-login and crash relaunch."""
+    if os.name == "nt":
+        die("--install is not supported on Windows (POSIX only)")
+    # Fail fast on a broken config / missing ${VAR} before writing anything.
+    if gateway:
+        _load_gateway_state()
+        prof_name = GATEWAY_PROFILE_NAME
+        provider_refs = [(group, name) for group, provs in load_providers().items()
+                         for name in provs]
+        cmd = [sys.executable, "-m", "awerouter", "__serve_gateway_daemon__", "--host", host]
+    else:
+        if profile:
+            _, prof, _ = load_for_profile(profile)
+        else:
+            _, prof, _ = load_default_profile()
+        prof_name = prof.name
+        provider_refs = [(group, dest.provider_name) for group in prof.protocols
+                         for dest in prof.destinations.values()]
+        cmd = [sys.executable, "-m", "awerouter", "__serve_daemon__", prof_name,
+               "--host", host]
+    if port is not None:
+        cmd += ["--port", str(port)]
+    service.require_env(provider_refs)
+    environment = service.collect_env()
+    # The service owns the target now: stop plain instances (same-port conflict)
+    # and any previously installed job before installing the fresh file.
+    replaced = runtime.stop_instances(prof_name, services=False)
+    service.stop(prof_name)
+    for inst in replaced:
+        print(f"note: stopped running {prof_name} (pid {inst['pid']}) — the service replaces it")
+    log = runtime.serve_log_path(prof_name)
+    path = service.install(prof_name, cmd, log, environment)
+    inst = service.wait_registered(prof_name, _BG_STARTUP_TIMEOUT_S)
+    if inst is None:
+        tail = _log_tail(log)
+        die(
+            f"resident service for '{prof_name}' failed to start"
+            + (f":\n{tail}" if tail else f" (see {log})")
+        )
+    print(f"awerouter {prof_name} running as a resident service "
+          f"({service.service_kind()}, pid {inst['pid']})")
+    print(f"  listening -> {inst['host']}:{inst['port']}  [{inst['protocol']}]")
+    print(f"  log       -> {log}")
+    print(f"  service   -> {path}  (0600; starts at login, relaunches after a crash)")
+    if environment:
+        print(f"  env       -> {len(environment)} var(s) baked into the service file "
+              "(re-run --install after changing them)")
+    print(f"  manage    -> awerouter serve status | awerouter serve stop {prof_name} "
+          f"(stops until next login) | awerouter serve stop {prof_name} --purge (removes)")
 
 
 @click.command("__serve_daemon__", hidden=True)
@@ -299,39 +370,85 @@ def _fmt_uptime(started) -> str:
 
 @serve.command("status")
 def status_cmd():
-    """Show running serve instances (foreground and background)."""
+    """Show running serve instances (foreground, background, resident)."""
     instances = runtime.list_instances()
-    if not instances:
+    idle = [s for s in service.installed_services()
+            if not any(i["profile"] == s["name"] for i in instances)]
+    if not instances and not idle:
         click.echo("(no running instances)")
         click.echo("start one: awerouter serve run <profile>   (add -d to run in the background)")
         return
     for inst in sorted(instances, key=lambda i: (i["profile"], i["port"])):
-        mode = "bg" if inst.get("background") else "fg"
+        if inst.get("service"):
+            mode = f"svc:{inst['service']}"
+        elif inst.get("background"):
+            mode = "bg"
+        else:
+            mode = "fg"
         click.echo(
             f"{inst.get('profile', '?')}\t{mode}\tpid {inst.get('pid', '?')}\t"
             f"{inst.get('host', '?')}:{inst.get('port', '?')}\t"
             f"[{inst.get('protocol', '?')}]\tup {_fmt_uptime(inst.get('started'))}"
         )
+    for s in idle:
+        click.echo(
+            f"{s['name']}\tsvc:{s['kind']}\t(resident service installed — not running; "
+            f"starts at login, remove: awerouter serve stop {s['name']} --purge)"
+        )
 
 
 @serve.command("stop")
 @click.argument("profile", required=False)
-def stop_cmd(profile):
-    """Stop running serve instances (all of them, or PROFILE's only)."""
+@click.option("--purge", is_flag=True, default=False,
+              help="Also remove the resident service (--install) so it no longer "
+                   "starts at login; without it a stopped service returns at next login.")
+def stop_cmd(profile, purge):
+    """Stop running serve instances (all of them, or PROFILE's only).
+
+    Resident-service instances are stopped through the service manager (a
+    plain kill would be undone by the restart policy) and return at the next
+    login; --purge also removes them from startup."""
     if os.name == "nt":
         die("stop is not supported on Windows (POSIX only)")
-    stopped = runtime.stop_instances(profile)
-    if not stopped:
-        if profile:
-            click.echo(f"(nothing to stop — no running instance for profile '{profile}')")
-        else:
-            click.echo("(nothing to stop)")
-        return
+    stopped = runtime.stop_instances(profile, services=False)
     for inst in stopped:
         line = f"stopped {inst['profile']} (pid {inst['pid']}, port {inst['port']})"
         if runtime.pid_alive(inst["pid"]):
             line += " — still shutting down"
         click.echo(line)
+    svc_stopped = []
+    for inst in (i for i in runtime.list_instances()
+                 if (profile is None or i["profile"] == profile) and i.get("service")):
+        service.stop(inst["profile"])
+        for _ in range(20):
+            if not runtime.pid_alive(inst["pid"]):
+                break
+            time.sleep(0.1)
+        click.echo(
+            f"stopped {inst['profile']} (pid {inst['pid']}, port {inst['port']}) "
+            "[resident — returns at next login; --purge removes it]"
+        )
+        svc_stopped.append(inst["profile"])
+    purged = []
+    if purge:
+        names = set(svc_stopped)
+        if profile is not None:
+            names.add(profile)
+        else:
+            names |= {s["name"] for s in service.installed_services()}
+        for name in sorted(names):
+            removed = service.purge(name)
+            if removed:
+                click.echo(f"removed resident service for {name} ({removed}) — "
+                           "no longer starts at login")
+                purged.append(name)
+    if not stopped and not svc_stopped:
+        if profile:
+            click.echo(f"(nothing to stop — no running instance for profile '{profile}')")
+        else:
+            click.echo("(nothing to stop)")
+    if purge and not purged and not svc_stopped:
+        click.echo("(no resident service installed)")
 
 
 _NEW_PROVIDER = "<new>"
