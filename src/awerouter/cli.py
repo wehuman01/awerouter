@@ -4,14 +4,17 @@ Imports the click group from config.py and extends it.
 """
 
 import asyncio
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import click
 
 from awerouter import __version__
+from awerouter import runtime
 from awerouter.config import (
     DEFAULT_PORT,
     SuggestGroup,
@@ -53,14 +56,14 @@ def _resolve_port(cli_port, profile) -> tuple[int, bool]:
     return DEFAULT_PORT, False
 
 
-def _run_serve(profile, port, host: str) -> None:
+def _run_serve(profile, port, host: str, background: bool = False) -> None:
     if profile:
         providers, routing, settings = load_for_profile(profile)
     else:
         providers, routing, settings = load_default_profile()
     port, port_explicit = _resolve_port(port, routing)
     try:
-        asyncio.run(_serve(host, port, providers, routing, settings, port_explicit))
+        asyncio.run(_serve(host, port, providers, routing, settings, port_explicit, background))
     except KeyboardInterrupt:
         raise SystemExit(0)
 
@@ -70,26 +73,161 @@ def _run_serve(profile, port, host: str) -> None:
 @click.option("--port", default=None, type=int,
               help="Listen port (overrides the profile's 'port'; default 20128).")
 @click.option("--host", default="127.0.0.1", show_default=True, help="Bind address.")
-def serve(profile, port: int, host: str):
+@click.option("-d", "--background", is_flag=True, default=False,
+              help="Detach and keep running after the terminal closes "
+                   "(output -> serve-<profile>.log in the state dir).")
+def serve(profile, port: int, host: str, background: bool):
     """Start the awerouter daemon for PROFILE.
 
     PROFILE is a profile id from routing.json. If omitted, auto-selects when only
-    one profile exists.
+    one profile exists. Config changes (routing.json / providers.json) hot-reload
+    without a restart. With -d the daemon runs in the background; see
+    `awerouter status` and `awerouter stop`.
     """
-    _run_serve(profile, port, host)
+    if background:
+        _start_background(profile, port, host)
+    else:
+        _run_serve(profile, port, host)
 
 
 @click.command("__serve_profile__", hidden=True)
 @click.option("--port", default=None, type=int,
               help="Listen port (overrides the profile's 'port'; default 20128).")
 @click.option("--host", default="127.0.0.1", show_default=True, help="Bind address.")
+@click.option("-d", "--background", is_flag=True, default=False,
+              help="Detach and keep running after the terminal closes.")
 @click.pass_context
-def _serve_profile(ctx, port: int, host: str):
+def _serve_profile(ctx, port: int, host: str, background: bool):
     """Bare profile launch: `awerouter <profile>` == `awerouter serve <profile>`."""
-    _run_serve(ctx.meta["profile_name"], port, host)
+    _run_serve(ctx.meta["profile_name"], port, host, background)
 
 
 cli.add_command(_serve_profile)
+
+
+# How long `serve -d` waits for the detached child to bind + register before
+# giving up and reporting the log tail.
+_BG_STARTUP_TIMEOUT_S = 15.0
+
+
+def _start_background(profile, port, host: str) -> None:
+    if os.name == "nt":
+        die("--background is not supported on Windows (POSIX only)")
+    if profile:
+        _, prof, _ = load_for_profile(profile)
+    else:
+        _, prof, _ = load_default_profile()
+    running = [i for i in runtime.list_instances() if i["profile"] == prof.name]
+    if running:
+        listed = ", ".join(f"pid {i['pid']} port {i['port']}" for i in running)
+        print(f"note: '{prof.name}' is already running ({listed}); starting another anyway")
+    log = runtime.serve_log_path(prof.name)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "-m", "awerouter", "__serve_daemon__", prof.name,
+           "--host", host]
+    if port is not None:
+        cmd += ["--port", str(port)]
+    with log.open("ab") as out:
+        child = subprocess.Popen(
+            cmd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            start_new_session=True, env=dict(os.environ),
+        )
+    deadline = time.monotonic() + _BG_STARTUP_TIMEOUT_S
+    inst = None
+    while time.monotonic() < deadline:
+        inst = runtime.instance_by_pid(child.pid)
+        if inst is not None:
+            break
+        if child.poll() is not None:
+            break
+        time.sleep(0.1)
+    if inst is None:
+        tail = _log_tail(log)
+        die(
+            f"background serve for '{prof.name}' failed to start"
+            + (f":\n{tail}" if tail else f" (see {log})")
+        )
+    print(f"awerouter {prof.name} running in background (pid {inst['pid']})")
+    print(f"  listening -> {inst['host']}:{inst['port']}  [{inst['protocol']}]")
+    print(f"  log       -> {log}")
+    print(f"  manage    -> awerouter status | awerouter stop {prof.name}")
+
+
+def _log_tail(log: Path, lines: int = 15) -> str:
+    try:
+        return "\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
+    except OSError:
+        return ""
+
+
+@click.command("__serve_daemon__", hidden=True)
+@click.argument("profile")
+@click.option("--port", default=None, type=int,
+              help="Listen port (overrides the profile's 'port'; default 20128).")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Bind address.")
+def _serve_daemon(profile, port: int, host: str):
+    """Foreground child of `serve --background` (registered as background)."""
+    try:
+        sys.stdout.reconfigure(line_buffering=True)  # log file is block-buffered otherwise
+    except (AttributeError, ValueError):  # non-tty/stdout replacement without reconfigure
+        pass
+    _run_serve(profile, port, host, background=True)
+
+
+cli.add_command(_serve_daemon)
+
+
+def _fmt_uptime(started) -> str:
+    if not isinstance(started, (int, float)):
+        return "-"
+    s = max(0, int(time.time() - started))
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    if h < 24:
+        return f"{h}h{m:02d}m"
+    d, h = divmod(h, 24)
+    return f"{d}d{h}h"
+
+
+@cli.command("status")
+def status_cmd():
+    """Show running serve instances (foreground and background)."""
+    instances = runtime.list_instances()
+    if not instances:
+        click.echo("(no running instances)")
+        click.echo("start one: awerouter serve <profile>   (add -d to run in the background)")
+        return
+    for inst in sorted(instances, key=lambda i: (i["profile"], i["port"])):
+        mode = "bg" if inst.get("background") else "fg"
+        click.echo(
+            f"{inst.get('profile', '?')}\t{mode}\tpid {inst.get('pid', '?')}\t"
+            f"{inst.get('host', '?')}:{inst.get('port', '?')}\t"
+            f"[{inst.get('protocol', '?')}]\tup {_fmt_uptime(inst.get('started'))}"
+        )
+
+
+@cli.command("stop")
+@click.argument("profile", required=False)
+def stop_cmd(profile):
+    """Stop running serve instances (all of them, or PROFILE's only)."""
+    if os.name == "nt":
+        die("stop is not supported on Windows (POSIX only)")
+    stopped = runtime.stop_instances(profile)
+    if not stopped:
+        if profile:
+            click.echo(f"(nothing to stop — no running instance for profile '{profile}')")
+        else:
+            click.echo("(nothing to stop)")
+        return
+    for inst in stopped:
+        line = f"stopped {inst['profile']} (pid {inst['pid']}, port {inst['port']})"
+        if runtime.pid_alive(inst["pid"]):
+            line += " — still shutting down"
+        click.echo(line)
 
 
 _NEW_PROVIDER = "<new>"

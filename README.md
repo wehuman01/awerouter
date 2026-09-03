@@ -128,11 +128,15 @@ awerouter add
 
 # 3. Start the daemon (profile name optional when only one exists)
 awerouter serve [cc-router-1]     # shorthand: awerouter cc-router-1
+#    add -d to run it in the background: awerouter serve cc-router-1 -d
+#    (survives the terminal; log: ~/.local/state/awerouter/serve-<profile>.log)
 
 # 4. Point CC at it — the serve banner prints both lines below
 export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 # aweswitch profile env: ANTHROPIC_MODEL=auto, _HAIKU_=flash, _OPUS_=pro
 ```
+
+Config edits don't need a restart: serve watches `routing.json` / `providers.json` and hot-reloads changes (a broken file keeps the previous config serving until it parses again — see [Background serving & hot reload](#background-serving--hot-reload)).
 
 The bundled template source is [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/); `awerouter init <template>` generates its matching files in your configuration directory. Already have a config? `awerouter init <template> --merge` adds the template's missing providers, profiles, and settings to it — existing entries are never overwritten, profile id collisions are skipped, and newly-set `imageModel`/`defaultModel`/`imageBridge` print a warning since they re-route every profile.
 
@@ -478,14 +482,31 @@ Coding agents resubmit the whole conversation every turn, and most of it is tool
 
 Compression is inspired by [rtk](https://github.com/rtk-ai/rtk) (Apache 2.0) and [9router](https://github.com/decolua/9router)'s JS port (MIT); this implementation is a from-scratch Python rewrite. The request log records the estimated saved tokens per request.
 
+## Background serving & hot reload
+
+`awerouter serve <profile> -d` runs the daemon detached — it keeps serving after the terminal closes, logging to `~/.local/state/awerouter/serve-<profile>.log` (append; one file per profile). The command waits for the daemon to bind and prints its pid, port, and log path; it also notes when the profile is already running (it starts another instance anyway — same profile, next port).
+
+Every serve instance — foreground or background — registers itself under `~/.local/state/awerouter/run/` at bind time, so one command sees them all:
+
+```bash
+awerouter status              # profile, fg/bg, pid, host:port, protocol, uptime
+awerouter stop [PROFILE]      # SIGTERM all instances, or one profile's (graceful shutdown)
+```
+
+Registration files are keyed by pid; entries whose process no longer exists are pruned automatically, and `stop` refuses to signal a pid whose command line no longer looks like awerouter (a reused pid after an unclean kill). `-d`/`stop` are POSIX-only.
+
+Serve also watches `routing.json` and `providers.json` (1s mtime poll) and hot-reloads changes: destinations, thresholds, tool routing, settings overrides, provider entries — even switching the profile's providers — apply to the next request without a restart. A file that fails to load (mid-save partial write, broken JSON) is announced once and the previous config keeps serving until the file parses again; the one thing a reload cannot do is rebind the listen port — change the `port` field and serve prints a restart hint instead.
+
 ## Commands
 
 ```bash
 awerouter init [TEMPLATE]             # create config from a bundled template (default / step-glm / glm-codex / step-glm-mm); --merge fills it into an existing config
 awerouter add                         # interactively add a profile (pick category and providers)
 awerouter list                        # list profiles (name, protocol, port, flash, pro, threshold)
-awerouter serve [PROFILE] [--port N] [--host 127.0.0.1]  # port: --port > profile 'port' > 20128
-awerouter <PROFILE>                   # shorthand for serve PROFILE
+awerouter serve [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # port: --port > profile 'port' > 20128; -d runs in background
+awerouter <PROFILE>                   # shorthand for serve PROFILE (also takes -d)
+awerouter status                      # running serve instances (foreground + background)
+awerouter stop [PROFILE]              # stop all running instances, or one profile's
 awerouter restore [providers|routing] # restore a config file from its .bak backup
 awerouter self-update [--check]        # upgrade to the latest PyPI release (--check: versions only)
 awerouter config path                 # print both config file paths

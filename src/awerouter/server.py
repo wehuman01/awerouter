@@ -13,6 +13,7 @@ import asyncio
 import errno
 import json
 import os
+import signal
 import time
 import urllib.request
 import uuid
@@ -22,6 +23,7 @@ from aiohttp import web
 
 from awerouter import __version__
 from awerouter import rtk
+from awerouter import runtime
 from awerouter.claude import (
     AUTH_SENTINEL as CLAUDE_SENTINEL,
     ClaudeAuthError,
@@ -30,7 +32,14 @@ from awerouter.claude import (
     login_status,
 )
 from awerouter.codex import AUTH_SENTINEL, CodexAuthError, apply_codex_auth, load_codex_login
-from awerouter.config import die, expand_value, is_loopback_url
+from awerouter.config import (
+    die,
+    expand_value,
+    is_loopback_url,
+    load_for_profile,
+    providers_path,
+    routing_path,
+)
 from awerouter.logging import append, auto_threshold, ensure_log_dir
 from awerouter.protocols import ENDPOINT_PATHS, extract
 from awerouter.router import resolve
@@ -769,6 +778,70 @@ def create_app(providers: dict, profile, settings) -> web.Application:
 
 
 # ---------------------------------------------------------------------------
+# Hot reload: routing.json / providers.json changes apply without a restart
+# ---------------------------------------------------------------------------
+
+# How often the watcher polls the config files' mtimes.
+_RELOAD_POLL_S = 1.0
+
+
+def _config_mtimes() -> tuple:
+    mtimes = []
+    for p in (routing_path(), providers_path()):
+        try:
+            mtimes.append(p.stat().st_mtime_ns)
+        except OSError:  # missing (deleted mid-edit) counts as a change to None
+            mtimes.append(None)
+    return tuple(mtimes)
+
+
+def _reload_config(app, profile_name: str) -> bool:
+    """Swap a live app's profile/settings/providers for a freshly loaded copy.
+
+    Prints why on refusal and returns False — the running config stays in
+    effect until a loadable file shows up. In-flight requests keep whatever
+    they read at their start; the swap only affects requests that begin
+    after it.
+    """
+    try:
+        new_providers, new_profile, new_settings = load_for_profile(profile_name)
+    except SystemExit as exc:
+        print(f"  config reload skipped (serving the previous config): {exc}")
+        return False
+    old_profile = app["profile"]
+    auto_line = _resolve_auto_threshold(new_profile, new_settings)
+    app["providers"] = new_providers
+    app["profile"] = new_profile
+    app["settings"] = new_settings
+    if new_profile.port != old_profile.port:
+        print(f"  note -> 'port' for this profile is now {new_profile.port or '(default)'} "
+              "in routing.json; restart serve to rebind")
+    flash, pro = new_profile.destinations["flash"], new_profile.destinations["pro"]
+    print(f"  config reloaded -> flash={flash.provider_name}/{flash.model}  "
+          f"pro={pro.provider_name}/{pro.model}  "
+          f"L3>{new_profile.long_context_threshold:,}")
+    if auto_line is not None:
+        print(auto_line)
+    return True
+
+
+async def _watch_config(app, profile_name: str) -> None:
+    """Poll config mtimes and reload on change.
+
+    A failed reload announces itself once per file state (mid-save partial
+    write, broken JSON) and retries when the file changes again.
+    """
+    last = _config_mtimes()
+    while True:
+        await asyncio.sleep(_RELOAD_POLL_S)
+        now = _config_mtimes()
+        if now == last:
+            continue
+        if _reload_config(app, profile_name):
+            last = now
+
+
+# ---------------------------------------------------------------------------
 # Serve command (called from cli.py)
 # ---------------------------------------------------------------------------
 
@@ -897,7 +970,7 @@ def _claude_login_warning(providers: dict) -> "str | None":
 
 
 async def _serve(host: str, port: int, providers: dict, profile, settings,
-                 port_explicit: bool = False) -> None:
+                 port_explicit: bool = False, background: bool = False) -> None:
     auto_line = _resolve_auto_threshold(profile, settings)
     app = create_app(providers, profile, settings)
     runner = web.AppRunner(app)
@@ -940,6 +1013,7 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
     actual_port = site._server.sockets[0].getsockname()[1]
     print(f"awerouter listening on {host}:{actual_port}  [{profile.name}]")
     print(f"  protocol      -> {profile.protocol}")
+    print("  hot reload    -> on (routing.json/providers.json changes apply without restart)")
     if profile.port is not None:
         print(f"  port          -> {profile.port} (from routing.json; --port overrides)")
     if profile.rtk:
@@ -991,8 +1065,30 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
         print()
         print(warning)
     try:
-        await asyncio.Event().wait()
+        runtime.register(profile.name, profile.protocol, actual_port, host, background)
+    except OSError as exc:
+        print(f"  warning -> cannot register this instance ({exc}); "
+              "awerouter status/stop won't see it")
+    watcher = asyncio.ensure_future(_watch_config(app, profile.name))
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig_name in ("SIGTERM", "SIGHUP"):  # graceful stop / lost terminal
+        sig = getattr(signal, sig_name, None)
+        if sig is None:
+            continue
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+        except (NotImplementedError, RuntimeError):  # Windows loops, non-main thread
+            pass
+    try:
+        await stop_event.wait()
     except asyncio.CancelledError:
         pass
     finally:
+        watcher.cancel()
+        try:
+            await watcher
+        except asyncio.CancelledError:
+            pass
+        runtime.unregister()
         await runner.cleanup()

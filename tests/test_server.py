@@ -20,6 +20,7 @@ from awerouter.server import (
     _filter_headers,
     _loopback_proxy_warning,
     _noauth_warning,
+    _reload_config,
     _resolve_auto_threshold,
     _serve,
     create_app,
@@ -1385,6 +1386,107 @@ class TestServePortBinding:
             assert note.group(1) == listen.group(1)
         finally:
             s.close()
+
+    def test_serve_registers_and_unregisters(self):
+        from awerouter import runtime
+
+        async def t():
+            task = asyncio.ensure_future(
+                _serve("127.0.0.1", 0, _providers(0), ROUTING, SETTINGS))
+            await asyncio.sleep(0.5)
+            inst = runtime.instance_by_pid(os.getpid())
+            assert inst is not None
+            assert inst["background"] is False
+            assert inst["port"] > 0
+            task.cancel()
+            await task
+
+        asyncio.run(t())
+        assert runtime.instance_by_pid(os.getpid()) is None
+
+
+class TestHotReload:
+    """routing.json / providers.json changes swap a live app's routing."""
+
+    def _write_config(self, tmp_path, threshold=8000, port=None):
+        (tmp_path / "providers.json").write_text(json.dumps({"anthropic": {
+            "stepfun": {"base_url": "https://api.stepfun.com/x", "auth": "${STEPFUN_KEY}"},
+            "anthropic": {"base_url": "https://api.anthropic.com", "auth": "${ANTHROPIC_KEY}"},
+        }}))
+        entry = {"protocol": "anthropic", "longContextThreshold": threshold,
+                 "destinations": {"flash": "stepfun,sf-flash", "pro": "anthropic,opus"}}
+        if port is not None:
+            entry["port"] = port
+        (tmp_path / "routing.json").write_text(json.dumps({"cc-1": entry}))
+
+    def _app(self):
+        # _reload_config only swaps these three entries; a plain dict is the app
+        return {"providers": _providers(0), "profile": ROUTING, "settings": SETTINGS}
+
+    def test_reload_swaps_profile(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        self._write_config(tmp_path, threshold=4000)
+        app = self._app()
+        assert _reload_config(app, "cc-1") is True
+        assert app["profile"].name == "cc-1"
+        assert app["profile"].long_context_threshold == 4000
+        assert app["settings"] is not SETTINGS  # freshly loaded, not the startup copy
+        out = capsys.readouterr().out
+        assert "config reloaded" in out
+        assert "L3>4,000" in out
+        assert "restart serve to rebind" not in out
+
+    def test_reload_announces_port_change_without_rebinding(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        self._write_config(tmp_path, port=20150)
+        app = self._app()
+        assert _reload_config(app, "cc-1") is True
+        assert app["profile"].port == 20150
+        assert "restart serve to rebind" in capsys.readouterr().out
+
+    def test_invalid_config_keeps_serving_previous(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        self._write_config(tmp_path)
+        (tmp_path / "routing.json").write_text("{ broken json")
+        app = self._app()
+        old_profile = app["profile"]
+        assert _reload_config(app, "cc-1") is False
+        assert app["profile"] is old_profile
+        assert "reload skipped" in capsys.readouterr().out
+
+    def test_removed_profile_keeps_serving_previous(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        self._write_config(tmp_path)
+        (tmp_path / "routing.json").write_text(json.dumps({"settings": {}}))
+        app = self._app()
+        old_profile = app["profile"]
+        assert _reload_config(app, "cc-1") is False
+        assert app["profile"] is old_profile
+        assert "not found" in capsys.readouterr().out
+
+    def test_watcher_applies_change(self, tmp_path, monkeypatch):
+        from awerouter import server
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(server, "_RELOAD_POLL_S", 0.05)
+        self._write_config(tmp_path, threshold=8000)
+        app = self._app()
+
+        async def t():
+            task = asyncio.ensure_future(server._watch_config(app, "cc-1"))
+            await asyncio.sleep(0.2)  # let the watcher snapshot the initial mtimes
+            self._write_config(tmp_path, threshold=4000)
+            for _ in range(50):
+                if app["profile"].long_context_threshold == 4000:
+                    break
+                await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        asyncio.run(t())
+        assert app["profile"].long_context_threshold == 4000
 
 
 class TestRtk:

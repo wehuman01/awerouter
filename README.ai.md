@@ -12,7 +12,7 @@ This document is for AI coding agents. Help the user install and configure `awer
 
 **Never run `awerouter serve` inside this agent.** It starts a long-lived proxy session. Always tell the user to run it in their own terminal.
 
-You may run these read-only or non-interactive commands: `awerouter init`, `awerouter config path`, `awerouter config show`, `awerouter config edit`, `awerouter list`, `awerouter usage stats`, `awerouter usage log`, `awerouter usage calibrate`, `awerouter usage savings`.
+You may run these read-only or non-interactive commands: `awerouter init`, `awerouter config path`, `awerouter config show`, `awerouter config edit`, `awerouter list`, `awerouter status` (read-only instance listing), `awerouter usage stats`, `awerouter usage log`, `awerouter usage calibrate`, `awerouter usage savings`.
 
 Do not run `awerouter add` inside the agent — it is interactive and would block the session.
 
@@ -239,10 +239,11 @@ Common setups:
 
 Tell the user to start the daemon themselves:
 ```bash
-awerouter serve [profile-name]
+awerouter serve [profile-name]          # foreground
+awerouter serve [profile-name] -d       # background: survives the terminal, log in ~/.local/state/awerouter/serve-<profile>.log
 ```
 
-If only one routing profile exists, the profile name is optional.
+If only one routing profile exists, the profile name is optional. Either way, `awerouter status` shows every running instance (foreground and background) and `awerouter stop [PROFILE]` stops them. Config edits (routing.json / providers.json) hot-reload without a restart — a broken file keeps the previous config serving until it parses again.
 
 ---
 

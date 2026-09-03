@@ -128,11 +128,15 @@ awerouter add
 
 # 3. 启动 daemon（只有一个 profile 时名字可省）
 awerouter serve [cc-router-1]     # 等价简写：awerouter cc-router-1
+#    加 -d 后台常驻运行：awerouter serve cc-router-1 -d
+#    （终端关掉也不停；日志：~/.local/state/awerouter/serve-<profile>.log）
 
 # 4. 让 CC 指向它 —— serve 启动横幅会直接打印下面这两行
 export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 # aweswitch profile 环境变量：ANTHROPIC_MODEL=auto, _HAIKU_=flash, _OPUS_=pro
 ```
+
+改配置不用重启：serve 会监听 `routing.json` / `providers.json` 的修改并热加载（文件写坏时继续用上一份可用配置服务，见[后台运行与热加载](#后台运行与热加载)）。
 
 内置模板源码位于 [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/)；`awerouter init <template>` 会将对应文件生成到你的配置目录。已经有配置了？`awerouter init <template> --merge` 把模板里缺的 provider、profile 和 settings 补进现有配置——已有条目一律不覆盖，profile 重名则跳过，新写入的 `imageModel`/`defaultModel`/`imageBridge` 会打印警告（它们会改变所有 profile 的路由行为）。
 
@@ -478,14 +482,31 @@ L4 是后果检查点，不是难度猜测：代码刚被改写的**下一轮**�
 
 压缩算法设计源自 [rtk](https://github.com/rtk-ai/rtk)（Apache 2.0）及 [9router](https://github.com/decolua/9router) 的 JS 移植版（MIT），本模块为 Python 从零重构版；请求日志会记录每个请求估算省下的 token。
 
+## 后台运行与热加载
+
+`awerouter serve <profile> -d` 让 daemon 脱离终端常驻运行——终端关掉也不停，输出追加到 `~/.local/state/awerouter/serve-<profile>.log`（每个 profile 一个文件）。命令本身会等 daemon 绑定端口后打印 pid、端口和日志路径；如果该 profile 已经在跑也会提示（仍然照常再起一个实例——同 profile，端口顺延）。
+
+每个 serve 实例——无论前台还是后台——绑定端口时都会在 `~/.local/state/awerouter/run/` 注册自己，因此一条命令就能看到全部实例：
+
+```bash
+awerouter status              # profile、fg/bg、pid、host:port、协议、运行时长
+awerouter stop [PROFILE]      # SIGTERM 全部实例，或只停某个 profile 的（优雅退出）
+```
+
+注册文件按 pid 命名；进程已不存在的条目会自动清理。`stop` 拒绝向命令行已不像 awerouter 的 pid 发信号（进程被 -9 杀死后 pid 被复用的保护）。`-d`/`stop` 仅支持 POSIX 系统。
+
+serve 还会监听 `routing.json` 和 `providers.json` 的修改（每秒轮询 mtime）并热加载：destinations、阈值、tool routing、settings 覆盖、provider 条目——包括整体换掉 profile 的 provider——都无需重启、下一条请求即生效。文件加载失败（保存到一半、JSON 写坏）只提示一次，上一份可用配置继续服务，直到文件重新可解析；唯一不能热加载的是监听端口——改了 `port` 字段，serve 会打印需要重启的提示而不是重绑。
+
 ## 命令
 
 ```bash
 awerouter init [TEMPLATE]             # 从内置模板创建配置（default / step-glm / glm-codex / step-glm-mm）；--merge 把模板补进已有配置
 awerouter add                         # 交互式添加 profile（先选类别再选 provider）
 awerouter list                        # 列出 profile（名字、协议、端口、flash、pro、阈值）
-awerouter serve [PROFILE] [--port N] [--host 127.0.0.1]  # 端口优先级：--port > profile 'port' > 20128
-awerouter <PROFILE>                   # serve 的简写
+awerouter serve [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # 端口优先级：--port > profile 'port' > 20128；-d 后台运行
+awerouter <PROFILE>                   # serve 的简写（同样支持 -d）
+awerouter status                      # 查看运行中的 serve 实例（前台 + 后台）
+awerouter stop [PROFILE]              # 停止全部运行实例，或只停某个 profile 的
 awerouter restore [providers|routing] # 从 .bak 备份恢复配置文件
 awerouter self-update [--check]        # 升级到最新 PyPI 版本（--check：只看版本不升级）
 awerouter config path                 # 打印两个配置文件路径
