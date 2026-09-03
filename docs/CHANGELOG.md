@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.8
+
+Two correctness fixes to v0.5.7's features: gateway direct forwards no longer pollute per-profile usage stats, and resident-service installs keep percent-encoded env values intact.
+
+### Fixed
+- Gateway direct-forward usage attribution: a `<provider>/<model>` forward belongs to no routing profile, but the usage log recorded it under whichever profile happened to serve the protocol, skewing `usage --profile`. Those requests now log `direct` as profile/destination, with the real provider and model preserved (`tests/test_gateway.py`).
+- systemd `Environment=` values escape `%` as `%%` (systemd expands % specifiers there), so a percent-encoded proxy URL baked into a resident service by `serve run --install` reaches the daemon verbatim (`tests/test_service.py`).
+
 ## v0.5.7
 
 Resident services: `awerouter serve run <profile> --install` runs the daemon as a launchd agent on macOS or a systemd user unit on Linux. It starts at login (survives a reboot), relaunches after a crash, and `awerouter serve stop [PROFILE] [--purge]` controls it through the service manager instead of SIGTERM. The service bakes `${VAR}` auth values plus `AWEROUTER_*` and proxy variables into the file (mode 0600) because the service manager starts the daemon without your shell environment; missing referenced variables fail the install up front. Re-installing is the update path for host/port/env. `serve status` shows resident instances as `svc:launchd` / `svc:systemd` and lists installed-but-stopped services too. `awerouter serve all --install` covers gateway mode.
