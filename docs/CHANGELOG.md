@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-Background serving, instance tracking, and config hot reload: `awerouter serve run <profile> -d` runs the daemon detached (survives the terminal, logs to `<state>/serve-<profile>.log`), `awerouter serve status` lists every running serve instance — foreground and background — and `awerouter serve stop [PROFILE]` stops them gracefully. Serve now also watches `routing.json`/`providers.json` and applies edits without a restart.
+## v0.5.5
+
+Daemon lifecycle becomes first-class: `awerouter serve run <profile> -d` runs the daemon detached — it survives the terminal (log: `<state>/serve-<profile>.log`), `awerouter serve status` lists every running serve instance (foreground and background, registered under `<state>/run/` at bind time), and `awerouter serve stop [PROFILE]` stops them with a graceful SIGTERM. Serve now also watches `routing.json`/`providers.json` and hot-reloads edits — destinations, thresholds, tool routing, settings overrides, and provider entries apply to the next request without a restart. The CLI also reorganizes: `serve` becomes a command group (`run` / `status` / `stop`) and `login` / `logout` / `restore` move under `config` — the released top-level spellings keep working as hidden aliases, so nothing breaks.
 
 ### Added
 - `login`, `logout`, and `restore` moved under the `config` group — `awerouter config login [claude|codex]`, `awerouter config logout [claude|codex]`, `awerouter config restore [providers|routing]` — grouping every command that manages config-owned state (files, backups, the claude login store) next to `config path/show/edit`. The released top-level spellings keep working as hidden aliases (`awerouter login` etc.), so existing docs, scripts, and muscle memory don't break; `awerouter --help` lists only the `config` form. Error hints that name the command (missing claude login 503/warnings, `init --merge` behavior-shift note) now print the new spelling.
