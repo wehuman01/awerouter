@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+Gateway mode: `awerouter serve all` turns all routing.json profiles into one local endpoint. A request model name selects the profile (`<profile>/auto|flash|pro`, e.g. `step-glm/auto`); `GET /v1/models` advertises every alias. The existing `serve run <profile>` model remains unchanged, so users can migrate one client at a time or run both forms concurrently.
+
+### Added
+- `awerouter serve all [--port N] [--host HOST] [-d]`: one daemon and one port for every profile. It preserves the same-protocol proxy contract and per-profile routing/settings/providers; requests select the target profile from the model prefix, then `auto` runs the usual L1–L4 pipeline while `flash`/`pro` force that profile's destination. The gateway ignores per-profile `port` fields (its own `--port` or the normal 20128 scan is authoritative), hot-reloads profile additions/removals and every config edit, registers as `gateway` for `serve status`, and `serve stop gateway` stops it. Background mode writes `serve-gateway.log`.
+- Top-level `routing.json` `defaultProfile`: optional gateway-only bare-name target for `auto` / `flash` / `pro`, keeping existing Claude Code tier environment variables compatible. It must name a configured profile; with multiple profiles and no default, bare names fail loudly and callers must use `<profile>/...`; a lone profile is its own natural default. It is not valid inside a profile and does not affect single-profile serve.
+- Gateway discovery and honest failures: `/v1/models` lists default bare tiers when routable plus every profile alias; `/` identifies gateway mode. Unknown profile, invalid tier, and endpoint/profile protocol mismatch each return a descriptive 400 naming the problem and available alternatives. `/v1/messages/count_tokens` follows the same alias selection and model rewrite as inference.
+- Gateway-specific test coverage (alias selection, forced/custom tiers, default behavior, all protocols, errors, token counting, config parsing/reload and hints) plus README/README_cn documentation.
+
 ## v0.5.5
 
 Daemon lifecycle becomes first-class: `awerouter serve run <profile> -d` runs the daemon detached — it survives the terminal (log: `<state>/serve-<profile>.log`), `awerouter serve status` lists every running serve instance (foreground and background, registered under `<state>/run/` at bind time), and `awerouter serve stop [PROFILE]` stops them with a graceful SIGTERM. Serve now also watches `routing.json`/`providers.json` and hot-reloads edits — destinations, thresholds, tool routing, settings overrides, and provider entries apply to the next request without a restart. The CLI also reorganizes: `serve` becomes a command group (`run` / `status` / `stop`) and `login` / `logout` / `restore` move under `config` — the released top-level spellings keep working as hidden aliases, so nothing breaks.

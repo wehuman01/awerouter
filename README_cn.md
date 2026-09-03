@@ -434,7 +434,20 @@ settings 的每个键也都可以**直接写在 profile 体内**，与 `protocol
 
 > **基于 profile 的路由：** `routing.json` 用 profile id 分组（类似 aweswitch）。`awerouter serve run <profile>` 启动其中一个；只有一个 profile 时自动选择。`protocol` 字段把 profile 映射到 providers.json 的分组，并决定它服务哪个端点——serve 横幅按协议打印对应客户端的环境变量（anthropic → Claude Code 的 `ANTHROPIC_BASE_URL`；openai 协议 → `OPENAI_BASE_URL` / Codex `wire_api`）。它可以写单个 id，也可以写列表：`"protocol": ["anthropic", "openai-chat"]` 让一个端口同时服务两种线协议——客户端按端点路径自选（`/v1/messages` 还是 `/v1/chat/completions`），每种协议走自己的 provider 组，且每个 destination provider 必须在每个被服务分组里都存在（各自协议的 `base_url`）。注意：openai 客户端是单 model 配置，L2 档位匹配基本不触发——openai 流量走 L1 + L3，默认 flash。
 
-> **端口分配：** 可选的 `port` 字段为 profile 固定监听端口（`awerouter list` 会显示）；优先级：`--port` 参数 > profile `port` > 默认 20128。显式指定的端口被占用时直接报错退出——客户端写死了它，不能悄悄漂移。不配置端口时，serve 从 20128 起向上找第一个空闲端口：第一个实例拿 20128，下一个 20129，依次顺延——按启动顺序分配，与 profile 无关。一次只跑一个实例的热切换用法：profile 不配端口、客户端固定指向 20128 即可。
+> **网关模式（多 profile，一个端口）：** `awerouter serve all` 在**一个**端口服务 routing.json 的全部 profile；不再给每个组合配不同的 OpenCode/SDK provider 和端口。请求的 model 名选择 profile：`<profile>/auto`（完整 L1–L4 智能路由）、`<profile>/flash` 或 `<profile>/pro`（强制档位），例如 `step-glm/auto`、`step-deepseek/pro`。`GET /v1/models` 会列出所有可选名；同一 profile 支持的每种协议依旧由请求端点决定。未知 profile、错误档位或协议不匹配会返回 400 并说明可用 profile，不会静默落到其他组合。网关模式没有 profile 专属端口：它只认 `--port`，否则从 20128 起找空闲端口。
+>
+> ```json
+> {
+>   "defaultProfile": "step-glm",
+>   "settings": { "...": "..." },
+>   "step-glm": { "...": "..." },
+>   "step-deepseek": { "...": "..." }
+> }
+> ```
+>
+> 顶层可选的 `defaultProfile` 让裸名 `auto` / `flash` / `pro` 路由到指定 profile——这让 Claude Code 现有的三档环境变量无需改变。没有 `defaultProfile` 且有多个 profile 时，裸名会明确报错，必须使用 `<profile>/...`；只有一个 profile 时它自然就是默认值。`defaultProfile` 只影响网关模式，不能写在 profile 内；修改它和任意 profile 都会热加载。旧的 `serve run <profile>` 单 profile、多端口用法原样保留，可与网关同时运行。
+
+> **端口分配：** 单 profile 的可选 `port` 字段为 profile 固定监听端口（`awerouter list` 会显示）；优先级：`--port` 参数 > profile `port` > 默认 20128。显式指定的端口被占用时直接报错退出——客户端写死了它，不能悄悄漂移。不配置端口时，serve 从 20128 起向上找第一个空闲端口：第一个实例拿 20128，下一个 20129，依次顺延——按启动顺序分配，与 profile 无关。一次只跑一个实例的热切换用法：profile 不配端口、客户端固定指向 20128 即可。网关模式不读取 profile 的 `port`，只使用自己的 `--port` 或默认端口。
 
 ## 路由逻辑
 
@@ -484,7 +497,7 @@ L4 是后果检查点，不是难度猜测：代码刚被改写的**下一轮**�
 
 ## 后台运行与热加载
 
-`awerouter serve run <profile> -d` 让 daemon 脱离终端常驻运行——终端关掉也不停，输出追加到 `~/.local/state/awerouter/serve-<profile>.log`（每个 profile 一个文件）。命令本身会等 daemon 绑定端口后打印 pid、端口和日志路径；如果该 profile 已经在跑也会提示（仍然照常再起一个实例——同 profile，端口顺延）。
+`awerouter serve run <profile> -d` 让单 profile daemon 脱离终端常驻运行——终端关掉也不停，输出追加到 `~/.local/state/awerouter/serve-<profile>.log`（每个 profile 一个文件）。`awerouter serve all -d` 同样后台运行网关，日志为 `serve-gateway.log`，用 `awerouter serve stop gateway` 停止。两种命令都会等 daemon 绑定端口后打印 pid、端口和日志路径；已经在跑时会提示（仍然照常再起一个实例）。
 
 每个 serve 实例——无论前台还是后台——绑定端口时都会在 `~/.local/state/awerouter/run/` 注册自己，因此一条命令就能看到全部实例：
 
@@ -503,7 +516,8 @@ serve 还会监听 `routing.json` 和 `providers.json` 的修改（每秒轮询 
 awerouter init [TEMPLATE]             # 从内置模板创建配置（default / step-glm / glm-codex / step-glm-mm）；--merge 把模板补进已有配置
 awerouter add                         # 交互式添加 profile（先选类别再选 provider）
 awerouter list                        # 列出 profile（名字、协议、端口、flash、pro、阈值）
-awerouter serve run [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # 端口优先级：--port > profile 'port' > 20128；-d 后台运行
+awerouter serve run [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # 单 profile；端口：--port > profile 'port' > 20128
+awerouter serve all [--port N] [--host 127.0.0.1] [-d]            # 网关：所有 profile 共用一个端口，模型名为 <profile>/auto|flash|pro
 awerouter serve status                # 查看运行中的 serve 实例（前台 + 后台）
 awerouter serve stop [PROFILE]        # 停止全部运行实例，或只停某个 profile 的
 awerouter <PROFILE>                   # serve run 的简写（同样支持 -d）

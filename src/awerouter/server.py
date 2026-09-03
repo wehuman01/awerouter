@@ -17,6 +17,7 @@ import signal
 import time
 import urllib.request
 import uuid
+from dataclasses import dataclass
 
 import aiohttp
 from aiohttp import web
@@ -37,8 +38,11 @@ from awerouter.config import (
     expand_value,
     is_loopback_url,
     load_for_profile,
+    load_providers,
+    load_routing,
     providers_path,
     routing_path,
+    validate_profiles,
 )
 from awerouter.logging import append, auto_threshold, ensure_log_dir
 from awerouter.protocols import ENDPOINT_PATHS, extract
@@ -309,12 +313,18 @@ async def _bridge_images(request_id: str, session, body: dict, protocol: str,
 # ---------------------------------------------------------------------------
 
 
-def _resolve_for_request(body: dict, profile, settings, protocol: str) -> ResolveResult:
-    """Shared routing decision for all message-shaped endpoints."""
+def _resolve_for_request(body: dict, profile, settings, protocol: str,
+                         resolve_model: "str | None" = None) -> ResolveResult:
+    """Shared routing decision for all message-shaped endpoints.
+
+    resolve_model: what the routing pipeline matches — defaults to the body's
+    model. Gateway requests pass the tier part of the alias instead (""
+    = the 'auto' tier, matching no L2 label, so the full pipeline runs;
+    "flash"/"pro" normalize to the profile's own background/think labels)."""
     feat = extract(protocol, body)
     tr = settings.tool_routing
     return resolve(
-        body.get("model") or None,
+        resolve_model if resolve_model is not None else (body.get("model") or None),
         feat,
         profile.destinations,
         settings.background_model,
@@ -332,14 +342,14 @@ class _RoutingState:
     """Mutable routing state shared across the retry loop."""
 
     def __init__(self, profile, settings, body: dict, agent: str = "", rtk_saved: int = 0,
-                 protocol: str = ""):
+                 protocol: str = "", resolve_model: "str | None" = None):
         self.profile = profile
         self.body = body
         self.inbound_model = body.get("model") or ""
         self.agent = agent
         self.rtk_saved = rtk_saved
         self.protocol = protocol
-        self.result = _resolve_for_request(body, profile, settings, protocol)
+        self.result = _resolve_for_request(body, profile, settings, protocol, resolve_model)
         self.attempt = 0
         self.streaming_started = False
         self.codex_retried = False          # 401 auth retry happened (codex re-read / claude refresh)
@@ -385,21 +395,117 @@ def _protocol_mismatch(request: web.Request, endpoint_protocol: str) -> web.HTTP
     )
 
 
+# ---------------------------------------------------------------------------
+# Gateway mode: one port, every profile — the model name picks the profile
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _GatewayEntry:
+    """One profile as the gateway serves it: its own effective settings and
+    the provider groups of every protocol it speaks."""
+    profile: "RoutingProfile"
+    settings: "Settings"
+    providers: dict  # {protocol: {provider_name: Provider}} for served protocols
+
+
+def _gateway_error(message: str) -> web.HTTPBadRequest:
+    return web.HTTPBadRequest(
+        text=json.dumps({"error": {"message": message}}),
+        content_type="application/json",
+    )
+
+
+def _gateway_default_name(app) -> "str | None":
+    """The profile bare model names route to: routing.json's defaultProfile,
+    or the only profile when there is exactly one."""
+    default = app["default_profile"]
+    entries: dict = app["gateway"]
+    return default or (next(iter(entries)) if len(entries) == 1 else None)
+
+
+def _gateway_select(app, model: "str | None", endpoint_protocol: str) -> tuple[_GatewayEntry, str]:
+    """Resolve a gateway request to (entry, resolve_model) from the model name.
+
+    'profile/tier' picks the profile; the tier normalizes to the profile's own
+    L2 labels so forcing works even when they are customized ('haiku' etc.).
+    A bare name goes to the default profile and keeps its label meaning.
+    Anything unknown raises a 400 that names what to do instead.
+    """
+    entries: dict = app["gateway"]
+    if model and "/" in model:
+        name, _, tier = model.partition("/")
+        entry = entries.get(name)
+        if entry is None:
+            avail = ", ".join(sorted(entries)) or "(none)"
+            raise _gateway_error(
+                f"unknown profile '{name}' in model '{model}'; available: {avail}. "
+                "Use '<profile>/auto|flash|pro', or GET /v1/models to list them."
+            )
+        if endpoint_protocol not in entry.profile.protocols:
+            serving = sorted(n for n, e in entries.items()
+                             if endpoint_protocol in e.profile.protocols)
+            pick = f" Profiles serving it: {', '.join(serving)}." if serving else ""
+            raise _gateway_error(
+                f"profile '{name}' speaks '{entry.profile.protocol}'; "
+                f"this endpoint serves '{endpoint_protocol}'.{pick}"
+            )
+        s = entry.settings
+        if tier == "auto":
+            resolve_model = ""
+        elif tier in ("flash", s.background_model):
+            resolve_model = s.background_model
+        elif tier in ("pro", s.think_model):
+            resolve_model = s.think_model
+        else:
+            raise _gateway_error(
+                f"model '{model}': tier must be 'auto', 'flash', 'pro', or one of this "
+                f"profile's own labels ('{s.background_model}' / '{s.think_model}')"
+            )
+        return entry, resolve_model
+    # Bare name (or none at all): the default profile's tiers, exactly as a
+    # single-profile serve would treat them.
+    default_name = _gateway_default_name(app)
+    entry = entries.get(default_name) if default_name else None
+    if entry is None:
+        raise _gateway_error(
+            f"bare model name {model or '<none>'!r} has no default to route to: set "
+            "routing.json 'defaultProfile' or use '<profile>/auto|flash|pro'; "
+            f"profiles: {', '.join(sorted(entries)) or '(none)'}"
+        )
+    if endpoint_protocol not in entry.profile.protocols:
+        raise _gateway_error(
+            f"the default profile '{entry.profile.name}' speaks "
+            f"'{entry.profile.protocol}'; this endpoint serves '{endpoint_protocol}'. "
+            "Pick a '<profile>/…' name that serves it, or change defaultProfile."
+        )
+    return entry, model or ""
+
+
 async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.StreamResponse:
     """Generic same-protocol proxy flow: route, forward, retry, stream back, log."""
-    profile = request.app["profile"]
-    settings = request.app["settings"]
     session: aiohttp.ClientSession = request.app["session"]
-
-    if endpoint_protocol not in profile.protocols:
-        raise _protocol_mismatch(request, endpoint_protocol)
-    providers: dict = request.app["providers"][endpoint_protocol]
+    gateway = request.app.get("gateway")  # set = gateway mode (profile picked per request)
 
     t0 = time.monotonic()
     request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
     body = await request.json()
     headers = _filter_headers(dict(request.headers))
     path = ENDPOINT_PATHS[endpoint_protocol]
+
+    if gateway is not None:
+        # The model name picks the profile (see _gateway_select); everything
+        # below is profile-agnostic from here on.
+        entry, resolve_model = _gateway_select(request.app, body.get("model"), endpoint_protocol)
+        profile, settings = entry.profile, entry.settings
+        providers: dict = entry.providers[endpoint_protocol]
+    else:
+        profile = request.app["profile"]
+        settings = request.app["settings"]
+        if endpoint_protocol not in profile.protocols:
+            raise _protocol_mismatch(request, endpoint_protocol)
+        providers = request.app["providers"][endpoint_protocol]
+        resolve_model = None
 
     # Timeout: generous for streaming, tight for non-streaming
     is_stream = body.get("stream", False)
@@ -429,7 +535,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
 
     state = _RoutingState(profile, settings, body,
                           _agent_from_ua(request.headers.get("User-Agent", "")),
-                          rtk_saved, endpoint_protocol)
+                          rtk_saved, endpoint_protocol, resolve_model)
 
     while True:
         dest_key = state.result.destination
@@ -632,16 +738,23 @@ def _fallback_result(state: _RoutingState) -> ResolveResult:
 
 
 async def handle_count_tokens(request: web.Request) -> web.Response:
-    profile = request.app["profile"]
-    settings = request.app["settings"]
     session: aiohttp.ClientSession = request.app["session"]
-
-    if "anthropic" not in profile.protocols:
-        raise _protocol_mismatch(request, "anthropic")
-    providers: dict = request.app["providers"]["anthropic"]
+    gateway = request.app.get("gateway")
 
     body = await request.json()
     headers = _filter_headers(dict(request.headers))
+
+    if gateway is not None:
+        entry, resolve_model = _gateway_select(request.app, body.get("model"), "anthropic")
+        profile, settings = entry.profile, entry.settings
+        providers: dict = entry.providers["anthropic"]
+    else:
+        profile = request.app["profile"]
+        settings = request.app["settings"]
+        if "anthropic" not in profile.protocols:
+            raise _protocol_mismatch(request, "anthropic")
+        providers = request.app["providers"]["anthropic"]
+        resolve_model = None
 
     # Same compression as /v1/messages: the client's context-window estimate
     # must match what actually gets sent upstream.
@@ -656,7 +769,7 @@ async def handle_count_tokens(request: web.Request) -> web.Response:
                              profile, providers, settings)
 
     # Resolve destination (same logic as messages)
-    result = _resolve_for_request(body, profile, settings, "anthropic")
+    result = _resolve_for_request(body, profile, settings, "anthropic", resolve_model)
     dest = profile.destinations[result.destination]
     provider = providers[dest.provider_name]
 
@@ -679,17 +792,26 @@ async def handle_count_tokens(request: web.Request) -> web.Response:
 
 
 async def handle_models(request: web.Request) -> web.Response:
-    settings = request.app["settings"]
-    models = [
-        {"id": settings.background_model, "object": "model"},
-        {"id": "auto", "object": "model"},
-        {"id": settings.think_model, "object": "model"},
-    ]
+    gateway = request.app.get("gateway")
+    if gateway is None:
+        settings = request.app["settings"]
+        ids = [settings.background_model, "auto", settings.think_model]
+    else:
+        # Gateway: the model name IS the routing key — bare tiers of the
+        # default profile (when one exists) plus every profile's three tiers.
+        ids = []
+        default_name = _gateway_default_name(request.app)
+        if default_name:
+            s = gateway[default_name].settings
+            ids += [s.background_model, "auto", s.think_model]
+        for name in sorted(gateway):
+            ids += [f"{name}/auto", f"{name}/flash", f"{name}/pro"]
+    models = [{"id": i, "object": "model"} for i in ids]
     return web.json_response({"data": models, "object": "list"})
 
 
 async def handle_root(request: web.Request) -> web.Response:
-    return web.json_response({
+    info = {
         "name": "awerouter",
         "version": request.app["version"],
         "endpoints": [
@@ -699,7 +821,11 @@ async def handle_root(request: web.Request) -> web.Response:
             "POST /v1/responses",
             "GET /v1/models",
         ],
-    })
+    }
+    if request.app.get("gateway") is not None:
+        info["mode"] = "gateway"
+        info["models"] = sorted(request.app["gateway"])
+    return web.json_response(info)
 
 
 # ---------------------------------------------------------------------------
@@ -777,6 +903,38 @@ def create_app(providers: dict, profile, settings) -> web.Application:
     return app
 
 
+def create_gateway_app(entries: dict[str, _GatewayEntry],
+                        default_profile: "str | None") -> web.Application:
+    """Gateway app: every profile on one port. The request's model name picks
+    the profile ('<profile>/auto|flash|pro'); bare names go to default_profile
+    (see _gateway_select). Routes are identical to the single-profile app."""
+    app = web.Application()
+    app["gateway"] = entries
+    app["default_profile"] = default_profile
+    app["version"] = __version__
+
+    session = aiohttp.ClientSession()
+    app["session"] = session
+
+    app.add_routes([
+        web.get("/", handle_root),
+        web.get("/v1/models", handle_models),
+        web.post("/v1/messages", handle_messages),
+        web.post("/v1/messages/count_tokens", handle_count_tokens),
+        web.post("/v1/chat/completions", handle_chat_completions),
+        web.post("/v1/responses", handle_responses),
+        web.get("/models", handle_models),
+        web.post("/chat/completions", handle_chat_completions),
+        web.post("/responses", handle_responses),
+    ])
+
+    async def on_cleanup(app):
+        await app["session"].close()
+
+    app.on_cleanup.append(on_cleanup)
+    return app
+
+
 # ---------------------------------------------------------------------------
 # Hot reload: routing.json / providers.json changes apply without a restart
 # ---------------------------------------------------------------------------
@@ -825,8 +983,9 @@ def _reload_config(app, profile_name: str) -> bool:
     return True
 
 
-async def _watch_config(app, profile_name: str) -> None:
-    """Poll config mtimes and reload on change.
+async def _watch_config(app, profile_name: "str | None") -> None:
+    """Poll config mtimes and reload on change. profile_name None = gateway
+    mode: every profile and the bare-name default reload.
 
     A failed reload announces itself once per file state (mid-save partial
     write, broken JSON) and retries when the file changes again.
@@ -837,7 +996,9 @@ async def _watch_config(app, profile_name: str) -> None:
         now = _config_mtimes()
         if now == last:
             continue
-        if _reload_config(app, profile_name):
+        changed = (_reload_config(app, profile_name)
+                   if profile_name is not None else _reload_gateway(app))
+        if changed:
             last = now
 
 
@@ -969,13 +1130,12 @@ def _claude_login_warning(providers: dict) -> "str | None":
     )
 
 
-async def _serve(host: str, port: int, providers: dict, profile, settings,
-                 port_explicit: bool = False, background: bool = False) -> None:
-    auto_line = _resolve_auto_threshold(profile, settings)
-    app = create_app(providers, profile, settings)
-    runner = web.AppRunner(app)
-    await runner.setup()
-
+async def _bind_site(runner, host: str, port: int, port_explicit: bool) -> int:
+    """Bind the runner's socket and return the actual port. An explicitly
+    chosen port (--port or the profile's port field) must not silently move:
+    clients hardcode it. The implicit default takes the first free port
+    scanning up from it, so concurrent instances get predictable sequential
+    ports (20128, 20129, ...) in start order instead of random ones."""
     async def _bind(p: int) -> web.TCPSite:
         site = web.TCPSite(runner, host=host, port=p)
         await site.start()
@@ -983,8 +1143,6 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
 
     site = None
     if port_explicit:
-        # An explicitly chosen port (--port or the profile's port field) must
-        # not silently move: clients hardcode it.
         try:
             site = await _bind(port)
         except OSError:
@@ -994,9 +1152,6 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
                 f"  stop it first, or launch with a different --port"
             )
     else:
-        # Implicit default: take the first free port scanning up from it, so
-        # concurrent instances get predictable sequential ports (20128, 20129,
-        # ...) in start order instead of random ones.
         for candidate in range(port, port + _PORT_SCAN_SPAN):
             try:
                 site = await _bind(candidate)
@@ -1010,7 +1165,56 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
     if site is None:
         await runner.cleanup()
         die(f"no free port in {port}-{port + _PORT_SCAN_SPAN - 1}; pass --port explicitly")
-    actual_port = site._server.sockets[0].getsockname()[1]
+    return site._server.sockets[0].getsockname()[1]
+
+
+async def _run_until_stopped(runner, watcher) -> None:
+    """Common serve tail: wait for SIGTERM/SIGHUP, then tear everything down."""
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig_name in ("SIGTERM", "SIGHUP"):  # graceful stop / lost terminal
+        sig = getattr(signal, sig_name, None)
+        if sig is None:
+            continue
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+        except (NotImplementedError, RuntimeError):  # Windows loops, non-main thread
+            pass
+    try:
+        await stop_event.wait()
+    except asyncio.CancelledError:
+        pass
+    finally:
+        watcher.cancel()
+        try:
+            await watcher
+        except asyncio.CancelledError:
+            pass
+        runtime.unregister()
+        await runner.cleanup()
+
+
+def _serve_warnings(providers: dict) -> None:
+    """Serve-start warnings shared by both modes (loopback proxy, no-auth,
+    dead logins) over one flat {name: Provider} view."""
+    update_hint = cached_update_hint()
+    if update_hint:
+        print()
+        print(update_hint)
+    for warning in (_loopback_proxy_warning(), _noauth_warning(providers),
+                    _codex_login_warning(providers), _claude_login_warning(providers)):
+        if warning:
+            print()
+            print(warning)
+
+
+async def _serve(host: str, port: int, providers: dict, profile, settings,
+                 port_explicit: bool = False, background: bool = False) -> None:
+    auto_line = _resolve_auto_threshold(profile, settings)
+    app = create_app(providers, profile, settings)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    actual_port = await _bind_site(runner, host, port, port_explicit)
     print(f"awerouter listening on {host}:{actual_port}  [{profile.name}]")
     print(f"  protocol      -> {profile.protocol}")
     print("  hot reload    -> on (routing.json/providers.json changes apply without restart)")
@@ -1043,52 +1247,155 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     print()
     print(_client_hints(profile.protocols, display_host, actual_port, settings))
-    update_hint = cached_update_hint()
-    if update_hint:
-        print()
-        print(update_hint)
-    warning = _loopback_proxy_warning()
-    if warning:
-        print()
-        print(warning)
-    flat = _flat_providers(providers)
-    warning = _noauth_warning(flat)
-    if warning:
-        print()
-        print(warning)
-    warning = _codex_login_warning(flat)
-    if warning:
-        print()
-        print(warning)
-    warning = _claude_login_warning(flat)
-    if warning:
-        print()
-        print(warning)
+    _serve_warnings(_flat_providers(providers))
     try:
         runtime.register(profile.name, profile.protocol, actual_port, host, background)
     except OSError as exc:
         print(f"  warning -> cannot register this instance ({exc}); "
               "awerouter serve status/stop won't see it")
     watcher = asyncio.ensure_future(_watch_config(app, profile.name))
-    stop_event = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig_name in ("SIGTERM", "SIGHUP"):  # graceful stop / lost terminal
-        sig = getattr(signal, sig_name, None)
-        if sig is None:
-            continue
-        try:
-            loop.add_signal_handler(sig, stop_event.set)
-        except (NotImplementedError, RuntimeError):  # Windows loops, non-main thread
-            pass
+    await _run_until_stopped(runner, watcher)
+
+
+# ---------------------------------------------------------------------------
+# Gateway serve: one daemon, one port, every profile
+# ---------------------------------------------------------------------------
+
+
+def _load_gateway_state() -> tuple[dict[str, _GatewayEntry], "str | None"]:
+    """Everything the gateway serves, freshly loaded from disk: one entry per
+    profile plus the bare-name default (defaultProfile, or the only profile)."""
+    providers_all = load_providers()
+    settings, profiles = load_routing()
+    if not profiles:
+        die("no profiles in routing.json")
+    validate_profiles(providers_all, profiles)
+    entries = {
+        name: _GatewayEntry(
+            profile=p,
+            settings=p.settings,
+            providers={proto: providers_all[proto] for proto in p.protocols},
+        )
+        for name, p in profiles.items()
+    }
+    default = settings.default_profile
+    if default is None and len(entries) == 1:
+        default = next(iter(entries))  # a lone profile is the natural default
+    return entries, default
+
+
+def _gateway_serving_protocols(entries) -> list:
+    """Union of served protocols across profiles, first-seen order."""
+    return list(dict.fromkeys(p for e in entries.values() for p in e.profile.protocols))
+
+
+def _gateway_flat_providers(entries) -> dict:
+    """Flatten every profile's providers for the serve-start warnings (first
+    sighting of a name wins — same rule as _flat_providers)."""
+    flat = {}
+    for entry in entries.values():
+        for group in entry.providers.values():
+            for p in group.values():
+                flat.setdefault(p.name, p)
+    return flat
+
+
+def _gateway_client_hints(entries, default_profile: "str | None",
+                          display_host: str, port: int) -> str:
+    """Client pointers for gateway serve. With a default the per-protocol tier
+    env hints hold (bare names resolve); without one they would lie, so only
+    the base URLs print."""
+    protocols = _gateway_serving_protocols(entries)
+    if default_profile:
+        base = _client_hints(protocols, display_host, port,
+                             entries[default_profile].settings)
+    else:
+        base = "\n\n".join(
+            (f"point Claude Code here:\n"
+             f"  export ANTHROPIC_BASE_URL=http://{display_host}:{port}")
+            if p == "anthropic" else
+            (f"point your OpenAI client here:\n"
+             f"  export OPENAI_BASE_URL=http://{display_host}:{port}/v1"
+             + ('\n  codex: set base_url to the same URL in config.toml '
+                '(wire_api = "responses")' if p == "openai-responses" else ""))
+            for p in protocols)
+    example = f"{sorted(entries)[0]}/auto"
+    tail = (f"gateway: the model name picks the profile — "
+            f"'<profile>/auto|flash|pro' (e.g. {example}); GET /v1/models lists them")
+    if default_profile:
+        tail += f"; bare names route to '{default_profile}'"
+    else:
+        tail += "; no defaultProfile set — bare names are rejected"
+    return base + "\n\n" + tail
+
+
+def _reload_gateway(app) -> bool:
+    """Swap a live gateway app's entries/default for freshly loaded ones.
+
+    Same refusal semantics as the single-profile reload: a failed load keeps
+    the previous set serving; in-flight requests keep what they captured."""
     try:
-        await stop_event.wait()
-    except asyncio.CancelledError:
-        pass
-    finally:
-        watcher.cancel()
-        try:
-            await watcher
-        except asyncio.CancelledError:
-            pass
-        runtime.unregister()
-        await runner.cleanup()
+        new_entries, new_default = _load_gateway_state()
+    except SystemExit as exc:
+        print(f"  config reload skipped (serving the previous config): {exc}")
+        return False
+    # Re-materialize "auto" thresholds for the fresh copies (each prints its
+    # own evidence line, same as the single-profile reload).
+    for entry in new_entries.values():
+        _resolve_auto_threshold(entry.profile, entry.settings)
+    old_names = set(app["gateway"])
+    app["gateway"] = new_entries
+    app["default_profile"] = new_default
+    added = sorted(set(new_entries) - old_names)
+    removed = sorted(old_names - set(new_entries))
+    if added:
+        print(f"  profiles added   -> {', '.join(added)}")
+    if removed:
+        print(f"  profiles removed -> {', '.join(removed)}")
+    print(f"  config reloaded -> {len(new_entries)} profile(s); "
+          f"default -> {new_default or '(none)'}")
+    return True
+
+
+async def _serve_gateway(host: str, port: int, port_explicit: bool = False,
+                         background: bool = False) -> None:
+    entries, default_profile = _load_gateway_state()
+    # Materialize every "auto" threshold before the socket opens, so no
+    # request can race the resolution (same rule as single-profile serve).
+    for entry in entries.values():
+        _resolve_auto_threshold(entry.profile, entry.settings)
+    app = create_gateway_app(entries, default_profile)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    actual_port = await _bind_site(runner, host, port, port_explicit)
+    print(f"awerouter listening on {host}:{actual_port}  [gateway: {len(entries)} profile(s)]")
+    print("  hot reload    -> on (routing.json/providers.json changes apply without restart)")
+    if default_profile:
+        print(f"  default       -> {default_profile} (bare model names route here)")
+    else:
+        print("  default       -> (none; bare model names are rejected — "
+              "use '<profile>/auto|flash|pro')")
+    for name, e in sorted(entries.items()):
+        flash, pro = e.profile.destinations["flash"], e.profile.destinations["pro"]
+        line = (f"  {name}  [{e.profile.protocol}]  "
+                f"flash={flash.provider_name}/{flash.model}  "
+                f"pro={pro.provider_name}/{pro.model}")
+        if e.profile.threshold_auto:
+            line += f"  L3>auto"
+        else:
+            line += f"  L3>{e.profile.long_context_threshold:,}"
+        if e.profile.rtk:
+            line += "  rtk"
+        print(line)
+    display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    print()
+    print(_gateway_client_hints(entries, default_profile, display_host, actual_port))
+    _serve_warnings(_gateway_flat_providers(entries))
+    try:
+        runtime.register("gateway", "+".join(_gateway_serving_protocols(entries)),
+                         actual_port, host, background)
+    except OSError as exc:
+        print(f"  warning -> cannot register this instance ({exc}); "
+              "awerouter serve status/stop won't see it")
+    watcher = asyncio.ensure_future(_watch_config(app, None))
+    await _run_until_stopped(runner, watcher)

@@ -71,6 +71,11 @@ class Settings:
                                      # a text-only pro continues image sessions (opt-in)
     long_context_auto: AutoThresholdConfig = field(default_factory=AutoThresholdConfig)
     tool_routing: ToolRoutingConfig = field(default_factory=ToolRoutingConfig)
+    # Gateway-only (routing.json top-level "defaultProfile"): the profile bare
+    # model names (auto/flash/pro) resolve to under `serve all`. Attached by
+    # load_routing() to the GLOBAL settings only — per-profile Settings copies
+    # leave it None, and a profile body writing the key dies as unknown.
+    default_profile: Optional[str] = None
 
 
 @dataclass

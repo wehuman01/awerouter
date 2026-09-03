@@ -36,7 +36,7 @@ from awerouter.config import (
     validate_profiles,
 )
 from awerouter.protocols import PROTOCOL_IDS, effective_tokens
-from awerouter.server import _serve
+from awerouter.server import _load_gateway_state, _serve, _serve_gateway
 from awerouter.types import AutoThresholdConfig
 from awerouter.update_check import _version_gte, get_pypi_latest, skill_refresh_hint
 
@@ -65,6 +65,20 @@ def _run_serve(profile, port, host: str, background: bool = False) -> None:
     port, port_explicit = _resolve_port(port, routing)
     try:
         asyncio.run(_serve(host, port, providers, routing, settings, port_explicit, background))
+    except KeyboardInterrupt:
+        raise SystemExit(0)
+
+
+def _run_serve_gateway(port, host: str, background: bool = False) -> None:
+    """One daemon, one port, every profile — model names pick the profile.
+    Gateway mode ignores per-profile 'port' fields: its own port is --port or
+    the default 20128."""
+    if port is None:
+        port, port_explicit = DEFAULT_PORT, False
+    else:
+        port_explicit = True
+    try:
+        asyncio.run(_serve_gateway(host, port, port_explicit, background))
     except KeyboardInterrupt:
         raise SystemExit(0)
 
@@ -111,6 +125,28 @@ def run(profile, port: int, host: str, background: bool):
         _run_serve(profile, port, host)
 
 
+@serve.command("all")
+@click.option("--port", default=None, type=int,
+              help="Listen port (default 20128; profile 'port' fields do not apply here).")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Bind address.")
+@click.option("-d", "--background", is_flag=True, default=False,
+              help="Detach and keep running after the terminal closes "
+                   "(output -> serve-gateway.log in the state dir).")
+def serve_all_cmd(port: int, host: str, background: bool):
+    """Start ONE daemon serving EVERY profile on a single port.
+
+    The request's model name picks the profile: '<profile>/auto|flash|pro'
+    (e.g. step-glm/auto — see GET /v1/models). Bare names (auto/flash/pro)
+    route to the profile named by routing.json's top-level 'defaultProfile',
+    or the only profile when there is just one. Config changes hot-reload
+    without a restart; `awerouter serve stop gateway` stops it.
+    """
+    if background:
+        _start_background_gateway(port, host)
+    else:
+        _run_serve_gateway(port, host)
+
+
 @click.command("__serve_profile__", hidden=True)
 @click.option("--port", default=None, type=int,
               help="Listen port (overrides the profile's 'port'; default 20128).")
@@ -133,23 +169,12 @@ serve.add_command(_serve_profile)
 _BG_STARTUP_TIMEOUT_S = 15.0
 
 
-def _start_background(profile, port, host: str) -> None:
-    if os.name == "nt":
-        die("--background is not supported on Windows (POSIX only)")
-    if profile:
-        _, prof, _ = load_for_profile(profile)
-    else:
-        _, prof, _ = load_default_profile()
-    running = [i for i in runtime.list_instances() if i["profile"] == prof.name]
-    if running:
-        listed = ", ".join(f"pid {i['pid']} port {i['port']}" for i in running)
-        print(f"note: '{prof.name}' is already running ({listed}); starting another anyway")
-    log = runtime.serve_log_path(prof.name)
+def _spawn_background(cmd: list, log: Path, name: str) -> dict:
+    """Spawn the detached daemon child and wait for its registration.
+
+    Dies with the log tail when it exits or never binds within the timeout.
+    Returns the registered instance (pid, port, protocol, ...)."""
     log.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, "-m", "awerouter", "__serve_daemon__", prof.name,
-           "--host", host]
-    if port is not None:
-        cmd += ["--port", str(port)]
     with log.open("ab") as out:
         child = subprocess.Popen(
             cmd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
@@ -167,13 +192,53 @@ def _start_background(profile, port, host: str) -> None:
     if inst is None:
         tail = _log_tail(log)
         die(
-            f"background serve for '{prof.name}' failed to start"
+            f"background serve for '{name}' failed to start"
             + (f":\n{tail}" if tail else f" (see {log})")
         )
+    return inst
+
+
+def _start_background(profile, port, host: str) -> None:
+    if os.name == "nt":
+        die("--background is not supported on Windows (POSIX only)")
+    if profile:
+        _, prof, _ = load_for_profile(profile)
+    else:
+        _, prof, _ = load_default_profile()
+    running = [i for i in runtime.list_instances() if i["profile"] == prof.name]
+    if running:
+        listed = ", ".join(f"pid {i['pid']} port {i['port']}" for i in running)
+        print(f"note: '{prof.name}' is already running ({listed}); starting another anyway")
+    log = runtime.serve_log_path(prof.name)
+    cmd = [sys.executable, "-m", "awerouter", "__serve_daemon__", prof.name,
+           "--host", host]
+    if port is not None:
+        cmd += ["--port", str(port)]
+    inst = _spawn_background(cmd, log, prof.name)
     print(f"awerouter {prof.name} running in background (pid {inst['pid']})")
     print(f"  listening -> {inst['host']}:{inst['port']}  [{inst['protocol']}]")
     print(f"  log       -> {log}")
     print(f"  manage    -> awerouter serve status | awerouter serve stop {prof.name}")
+
+
+def _start_background_gateway(port, host: str) -> None:
+    if os.name == "nt":
+        die("--background is not supported on Windows (POSIX only)")
+    # Fail fast on a broken config before detaching a doomed child.
+    _load_gateway_state()
+    running = [i for i in runtime.list_instances() if i["profile"] == "gateway"]
+    if running:
+        listed = ", ".join(f"pid {i['pid']} port {i['port']}" for i in running)
+        print(f"note: the gateway is already running ({listed}); starting another anyway")
+    log = runtime.serve_log_path("gateway")
+    cmd = [sys.executable, "-m", "awerouter", "__serve_gateway_daemon__", "--host", host]
+    if port is not None:
+        cmd += ["--port", str(port)]
+    inst = _spawn_background(cmd, log, "gateway")
+    print(f"awerouter gateway running in background (pid {inst['pid']})")
+    print(f"  listening -> {inst['host']}:{inst['port']}  [{inst['protocol']}]")
+    print(f"  log       -> {log}")
+    print(f"  manage    -> awerouter serve status | awerouter serve stop gateway")
 
 
 def _log_tail(log: Path, lines: int = 15) -> str:
@@ -198,6 +263,22 @@ def _serve_daemon(profile, port: int, host: str):
 
 
 cli.add_command(_serve_daemon)
+
+
+@click.command("__serve_gateway_daemon__", hidden=True)
+@click.option("--port", default=None, type=int,
+              help="Listen port (default 20128).")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Bind address.")
+def _serve_gateway_daemon(port: int, host: str):
+    """Foreground child of `serve all --background` (registered as background)."""
+    try:
+        sys.stdout.reconfigure(line_buffering=True)  # log file is block-buffered otherwise
+    except (AttributeError, ValueError):  # non-tty/stdout replacement without reconfigure
+        pass
+    _run_serve_gateway(port, host, background=True)
+
+
+cli.add_command(_serve_gateway_daemon)
 
 
 def _fmt_uptime(started) -> str:

@@ -434,7 +434,20 @@ Keys reference `${ENV_VAR}` syntax. Missing env vars die with a clear message at
 
 > **Profile-based routing:** `routing.json` groups configs under profile ids (like aweswitch). `awerouter serve run <profile>` starts one; with a single profile it auto-selects. `protocol` maps the profile to a providers.json group and decides which endpoint it serves — the serve banner prints the matching client env (`ANTHROPIC_BASE_URL` for Claude Code, `OPENAI_BASE_URL` / Codex `wire_api` for the openai protocols). It accepts a single id or a list: `"protocol": ["anthropic", "openai-chat"]` serves both wire protocols on one port — clients pick by endpoint path (`/v1/messages` vs `/v1/chat/completions`), each protocol forwards through its own provider group, and every destination provider must exist in each served group (per-protocol `base_url`s). Note: openai clients are single-model, so L2 tier labels effectively never fire for them — openai traffic routes by L1 + L3 with a flash default.
 
-> **Ports:** the optional `port` field pins a profile's listen port (`awerouter list` shows it); precedence: `--port` flag > profile `port` > 20128 default. An explicitly chosen port that is already in use fails loudly — clients hardcode it, it must not silently move. Without one, serve takes the first free port scanning up from 20128: the first instance gets 20128, the next 20129, and so on — the assignment follows start order, not the profile. For the one-instance-at-a-time swap workflow, leave profiles portless and point clients at 20128.
+> **Gateway mode (many profiles, one port):** `awerouter serve all` serves **every** routing.json profile on one port. Instead of configuring a separate OpenCode/SDK provider and port for each combination, the request's model name selects it: `<profile>/auto` runs the full L1–L4 smart route; `<profile>/flash` and `<profile>/pro` force a tier — for example `step-glm/auto` or `step-deepseek/pro`. `GET /v1/models` lists all names; endpoint path still selects the wire protocol among the ones a profile serves. An unknown profile, bad tier, or protocol mismatch returns a descriptive 400 rather than silently falling into another combination. Gateway mode has no profile-specific ports: it takes only its own `--port`, or scans from 20128.
+>
+> ```json
+> {
+>   "defaultProfile": "step-glm",
+>   "settings": { "...": "..." },
+>   "step-glm": { "...": "..." },
+>   "step-deepseek": { "...": "..." }
+> }
+> ```
+>
+> The optional top-level `defaultProfile` maps bare `auto` / `flash` / `pro` names to one profile, so existing Claude Code three-tier environment variables keep working. With multiple profiles and no `defaultProfile`, bare names fail clearly and callers must use `<profile>/...`; with just one profile, it naturally becomes the default. `defaultProfile` affects gateway mode only and cannot go inside a profile; it and all profiles hot-reload. The existing single-profile, multi-port `serve run <profile>` workflow remains intact and can run alongside the gateway.
+
+> **Ports:** single-profile mode's optional `port` field pins a profile's listen port (`awerouter list` shows it); precedence: `--port` flag > profile `port` > 20128 default. An explicitly chosen port that is already in use fails loudly — clients hardcode it, it must not silently move. Without one, serve takes the first free port scanning up from 20128: the first instance gets 20128, the next 20129, and so on — the assignment follows start order, not the profile. For the one-instance-at-a-time swap workflow, leave profiles portless and point clients at 20128. Gateway mode ignores profile `port` fields and uses only its own `--port` or the default.
 
 ## How It Routes
 
@@ -484,7 +497,7 @@ Compression is inspired by [rtk](https://github.com/rtk-ai/rtk) (Apache 2.0) and
 
 ## Background serving & hot reload
 
-`awerouter serve run <profile> -d` runs the daemon detached — it keeps serving after the terminal closes, logging to `~/.local/state/awerouter/serve-<profile>.log` (append; one file per profile). The command waits for the daemon to bind and prints its pid, port, and log path; it also notes when the profile is already running (it starts another instance anyway — same profile, next port).
+`awerouter serve run <profile> -d` runs one profile detached — it keeps serving after the terminal closes, logging to `~/.local/state/awerouter/serve-<profile>.log` (append; one file per profile). `awerouter serve all -d` does the same for the gateway (log: `serve-gateway.log`; stop it with `awerouter serve stop gateway`). Both commands wait for the daemon to bind and print its pid, port, and log path; an already-running target is noted (another instance still starts).
 
 Every serve instance — foreground or background — registers itself under `~/.local/state/awerouter/run/` at bind time, so one command sees them all:
 
@@ -503,7 +516,8 @@ Serve also watches `routing.json` and `providers.json` (1s mtime poll) and hot-r
 awerouter init [TEMPLATE]             # create config from a bundled template (default / step-glm / glm-codex / step-glm-mm); --merge fills it into an existing config
 awerouter add                         # interactively add a profile (pick category and providers)
 awerouter list                        # list profiles (name, protocol, port, flash, pro, threshold)
-awerouter serve run [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # port: --port > profile 'port' > 20128; -d runs in background
+awerouter serve run [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # one profile; port: --port > profile 'port' > 20128
+awerouter serve all [--port N] [--host 127.0.0.1] [-d]            # gateway: every profile on one port, model = <profile>/auto|flash|pro
 awerouter serve status                # running serve instances (foreground + background)
 awerouter serve stop [PROFILE]        # stop all running instances, or one profile's
 awerouter <PROFILE>                   # shorthand for serve run PROFILE (also takes -d)

@@ -350,6 +350,12 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
     # Optional global settings (defaults: flash/pro) — the base every
     # profile-level settings block inherits from.
     raw_settings = data.pop("settings", {})
+    # Reserved top-level key (like "settings"): the gateway's bare-name
+    # default. Sits outside the settings block because it cannot be
+    # overridden per profile.
+    default_profile = data.pop("defaultProfile", None)
+    if default_profile is not None and (not isinstance(default_profile, str) or not default_profile):
+        die(f"routing.json 'defaultProfile' must be a profile name, got: {default_profile!r}")
     settings = _parse_settings(raw_settings)
 
     profiles: dict[str, RoutingProfile] = {}
@@ -441,6 +447,10 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
             settings=psettings,
             settings_overrides=raw_psettings,
         )
+    if default_profile is not None and default_profile not in profiles:
+        avail = ", ".join(profiles) or "(none)"
+        die(f"defaultProfile '{default_profile}' not found in routing.json; available: {avail}")
+    settings.default_profile = default_profile
     return settings, profiles
 
 
@@ -586,8 +596,8 @@ def merge_config(template: str = "default") -> dict:
             report["behavior_shift"].append(f"{key}={value}")
         r_changed = True
     for name, body in t_routing.items():
-        if name == "settings":
-            continue
+        if name in ("settings", "defaultProfile"):
+            continue  # reserved keys, not profiles (the default is never merged)
         if name in r_data:
             report["profiles_skipped"].append(name)
         else:
@@ -667,6 +677,10 @@ def format_providers_display(all_providers: dict[str, dict[str, Provider]]) -> s
 
 def format_routing_display(settings: Settings, profiles: dict[str, RoutingProfile]) -> str:
     display = {
+        # global-only gateway key: top-level in routing.json, never inherited
+        # by profile Settings copies.
+        **({"defaultProfile": settings.default_profile}
+           if settings.default_profile else {}),
         "settings": {
             "backgroundModel": settings.background_model,
             "thinkModel": settings.think_model,
