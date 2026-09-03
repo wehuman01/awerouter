@@ -36,7 +36,7 @@ from awerouter.config import (
     validate_profiles,
 )
 from awerouter.protocols import PROTOCOL_IDS, effective_tokens
-from awerouter.server import _load_gateway_state, _serve, _serve_gateway
+from awerouter.server import GATEWAY_PROFILE_NAME, _load_gateway_state, _serve, _serve_gateway
 from awerouter.types import AutoThresholdConfig
 from awerouter.update_check import _version_gte, get_pypi_latest, skill_refresh_hint
 
@@ -226,15 +226,15 @@ def _start_background_gateway(port, host: str) -> None:
         die("--background is not supported on Windows (POSIX only)")
     # Fail fast on a broken config before detaching a doomed child.
     _load_gateway_state()
-    running = [i for i in runtime.list_instances() if i["profile"] == "gateway"]
+    running = [i for i in runtime.list_instances() if i["profile"] == GATEWAY_PROFILE_NAME]
     if running:
         listed = ", ".join(f"pid {i['pid']} port {i['port']}" for i in running)
         print(f"note: the gateway is already running ({listed}); starting another anyway")
-    log = runtime.serve_log_path("gateway")
+    log = runtime.serve_log_path(GATEWAY_PROFILE_NAME)
     cmd = [sys.executable, "-m", "awerouter", "__serve_gateway_daemon__", "--host", host]
     if port is not None:
         cmd += ["--port", str(port)]
-    inst = _spawn_background(cmd, log, "gateway")
+    inst = _spawn_background(cmd, log, GATEWAY_PROFILE_NAME)
     print(f"awerouter gateway running in background (pid {inst['pid']})")
     print(f"  listening -> {inst['host']}:{inst['port']}  [{inst['protocol']}]")
     print(f"  log       -> {log}")

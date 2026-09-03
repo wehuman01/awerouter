@@ -1041,6 +1041,13 @@ def _client_hints(protocols, display_host: str, port: int, settings) -> str:
 _PORT_SCAN_SPAN = 100
 
 
+# Well-known instance name used by `awerouter serve all` when registering with
+# the runtime: it is what `serve status` and `serve stop gateway` match on, and
+# it is also the suffix of the background-serve log file. Keeping the literal in
+# one place avoids a real profile ever colliding with the gateway on purpose.
+GATEWAY_PROFILE_NAME = "gateway"
+
+
 def _fmt_setting_value(value) -> str:
     """One overrides-line item: strings bare, nested blocks as compact JSON."""
     if isinstance(value, str):
@@ -1392,7 +1399,7 @@ async def _serve_gateway(host: str, port: int, port_explicit: bool = False,
     print(_gateway_client_hints(entries, default_profile, display_host, actual_port))
     _serve_warnings(_gateway_flat_providers(entries))
     try:
-        runtime.register("gateway", "+".join(_gateway_serving_protocols(entries)),
+        runtime.register(GATEWAY_PROFILE_NAME, "+".join(_gateway_serving_protocols(entries)),
                          actual_port, host, background)
     except OSError as exc:
         print(f"  warning -> cannot register this instance ({exc}); "
