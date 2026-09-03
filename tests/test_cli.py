@@ -171,7 +171,7 @@ class TestInit:
         assert "settings added: imageModel, defaultModel" in r.output
         assert "skipped (already present): anthropic.stepfun" in r.output
         assert "warning: newly set in settings: imageModel=flash, defaultModel=pro" in r.output
-        assert "awerouter restore routing" in r.output
+        assert "awerouter config restore routing" in r.output
         settings, profiles = load_routing()
         assert settings.image_model == "flash"
         assert settings.default_model == "pro"
@@ -858,7 +858,7 @@ class TestRestore:
         # simulate a bad edit, with the add wizard's backup still around
         (tmp_path / "routing.json.bak").write_text(json.dumps(_routing()))
         (tmp_path / "routing.json").write_text(json.dumps({"settings": {}}))
-        r = CliRunner().invoke(cli, ["restore", "routing"], input="y\n")
+        r = CliRunner().invoke(cli, ["config", "restore", "routing"], input="y\n")
         assert r.exit_code == 0, r.output
         assert "config ok" in r.output
         assert json.loads((tmp_path / "routing.json").read_text()) == _routing()
@@ -867,14 +867,14 @@ class TestRestore:
         _setup(tmp_path, monkeypatch, _providers(), _routing())
         (tmp_path / "routing.json.bak").write_text(json.dumps(_routing()))
         (tmp_path / "routing.json").write_text(json.dumps({"settings": {}}))
-        r = CliRunner().invoke(cli, ["restore", "routing"], input="n\n")
+        r = CliRunner().invoke(cli, ["config", "restore", "routing"], input="n\n")
         assert r.exit_code == 0, r.output
         assert "aborted" in r.output
         assert json.loads((tmp_path / "routing.json").read_text()) == {"settings": {}}
 
     def test_no_backup_dies(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch, _providers(), _routing())
-        r = CliRunner().invoke(cli, ["restore", "providers"], input="y\n")
+        r = CliRunner().invoke(cli, ["config", "restore", "providers"], input="y\n")
         assert r.exit_code != 0
         assert "no backup found" in r.output
 
@@ -941,7 +941,7 @@ class TestLoginLogout:
                             lambda code, verifier, state: {
                                 "access_token": "at", "refresh_token": "rt",
                                 "expires_at": 4102444800.0, "scopes": "user:inference"})
-        r = CliRunner().invoke(cli, ["login", "claude"], input="the-code\n")
+        r = CliRunner().invoke(cli, ["config", "login", "claude"], input="the-code\n")
         assert r.exit_code == 0, r.output
         assert "authorize" in r.output          # the URL is shown for manual open
         assert "claude login saved" in r.output
@@ -955,7 +955,7 @@ class TestLoginLogout:
 
         monkeypatch.setattr(claude, "begin_login", lambda: ("u", "v", "s"))
         monkeypatch.setattr(claude, "complete_login", rejected)
-        r = CliRunner().invoke(cli, ["login"], input="bad-code\n")
+        r = CliRunner().invoke(cli, ["config", "login"], input="bad-code\n")
         assert r.exit_code != 0
         assert "invalid authorization code" in r.output
 
@@ -965,26 +965,65 @@ class TestLoginLogout:
         (tmp_path / "claude-auth.json").write_text(json.dumps(
             {"access_token": "old", "refresh_token": "rt",
              "expires_at": 4102444800.0}), encoding="utf-8")
-        r = CliRunner().invoke(cli, ["login", "claude"], input="n\n")
+        r = CliRunner().invoke(cli, ["config", "login", "claude"], input="n\n")
         assert r.exit_code == 0
         assert "aborted" in r.output
 
     def test_login_codex_points_at_the_cli(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch)
-        r = CliRunner().invoke(cli, ["login", "codex"])
+        r = CliRunner().invoke(cli, ["config", "login", "codex"])
         assert r.exit_code == 0
         assert "codex login" in r.output
 
     def test_logout_claude_removes_store(self, tmp_path, monkeypatch):
         monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
         (tmp_path / "claude-auth.json").write_text("{}", encoding="utf-8")
-        r = CliRunner().invoke(cli, ["logout", "claude"])
+        r = CliRunner().invoke(cli, ["config", "logout", "claude"])
         assert r.exit_code == 0
         assert "removed" in r.output
         assert not (tmp_path / "claude-auth.json").exists()
 
     def test_logout_claude_without_store(self, tmp_path, monkeypatch):
         monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
-        r = CliRunner().invoke(cli, ["logout"])
+        r = CliRunner().invoke(cli, ["config", "logout"])
         assert r.exit_code == 0
         assert "no claude login" in r.output
+
+
+class TestMovedConfigCommands:
+    """login/logout/restore moved under `config`; the released top-level
+    spellings keep working as hidden aliases."""
+
+    def test_old_login_spelling(self, tmp_path, monkeypatch):
+        """Bare `awerouter login codex` must not fall through to the
+        profile-name shorthand (which would try to serve a profile named
+        'login')."""
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        r = CliRunner().invoke(cli, ["login", "codex"])
+        assert r.exit_code == 0, r.output
+        assert "codex login" in r.output
+
+    def test_old_logout_spelling(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        r = CliRunner().invoke(cli, ["logout"])
+        assert r.exit_code == 0, r.output
+        assert "no claude login" in r.output
+
+    def test_old_restore_spelling(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        (tmp_path / "routing.json.bak").write_text(json.dumps(_routing()))
+        (tmp_path / "routing.json").write_text(json.dumps({"settings": {}}))
+        r = CliRunner().invoke(cli, ["restore", "routing"], input="y\n")
+        assert r.exit_code == 0, r.output
+        assert "config ok" in r.output
+
+    def test_old_spellings_hidden_from_top_level_help(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        r = CliRunner().invoke(cli, ["-h"])
+        assert r.exit_code == 0, r.output
+        for name in ("login", "logout", "restore"):
+            assert name not in r.output
+        r = CliRunner().invoke(cli, ["config", "-h"])
+        assert r.exit_code == 0, r.output
+        for name in ("login", "logout", "restore"):
+            assert name in r.output

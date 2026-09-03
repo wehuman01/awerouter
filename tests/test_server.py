@@ -1176,20 +1176,20 @@ class TestClaudeAccount:
                 })
                 assert r.status == 503
                 d = await r.json()
-                assert "awerouter login claude" in d["error"]["message"]
+                assert "awerouter config login claude" in d["error"]["message"]
         run(t())
 
     def test_serve_warning_without_login(self):
         providers = {"claude": Provider("claude", "https://api.anthropic.com", "claude")}
         w = _claude_login_warning(providers)
-        assert w is not None and "awerouter login claude" in w
+        assert w is not None and "awerouter config login claude" in w
 
     def test_serve_warning_with_invalid_login(self):
         self.dir.mkdir(parents=True, exist_ok=True)
         (self.dir / "claude-auth.json").write_text("{}", encoding="utf-8")
         providers = {"claude": Provider("claude", "https://api.anthropic.com", "claude")}
         w = _claude_login_warning(providers)
-        assert w is not None and "awerouter login claude" in w
+        assert w is not None and "awerouter config login claude" in w
 
     def test_no_serve_warning_with_login(self):
         self._login()

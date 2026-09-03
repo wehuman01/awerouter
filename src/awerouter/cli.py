@@ -1,6 +1,7 @@
-"""CLI commands: serve (run/status/stop) / add / login / list / config / usage.
+"""CLI commands: serve (run/status/stop) / add / list / usage.
 
-Imports the click group from config.py and extends it.
+Imports the click group from config.py and extends it. The `config` group
+(path/show/edit, plus login/logout/restore) lives in config.py.
 """
 
 import asyncio
@@ -19,7 +20,6 @@ from awerouter.config import (
     DEFAULT_PORT,
     ProfileGroup,
     SuggestGroup,
-    backup_path,
     cli as config_cli,
     config_dir,
     die,
@@ -325,60 +325,6 @@ def add():
     click.echo(f"Start it with: awerouter {name}")
 
 
-@cli.command("login")
-@click.argument("account", default="claude",
-                type=click.Choice(["claude", "codex"], case_sensitive=False))
-def login_cmd(account):
-    """Log in a subscription account used by an 'auth' sentinel provider."""
-    account = account.lower()
-    if account == "codex":
-        # The codex CLI owns its login (and its single-use refresh tokens);
-        # awerouter only reads auth.json, so the login happens in the CLI.
-        click.echo("codex logins live in the codex CLI — run: codex login")
-        click.echo("awerouter picks the result up from $CODEX_HOME/auth.json automatically.")
-        return
-    from awerouter import claude
-    if claude.login_status() is not None:
-        click.echo("an existing claude login will be replaced (its tokens become useless).")
-        if not click.confirm("Continue?"):
-            click.echo("aborted")
-            return
-    url, verifier, state = claude.begin_login()
-    click.echo("opening the browser to authorize awerouter as a Claude Code device…")
-    click.echo("(if it does not open, visit the URL below)")
-    click.echo()
-    click.echo(f"  {url}")
-    click.echo()
-    import webbrowser
-    webbrowser.open(url)
-    code = click.prompt("After authorizing, paste the code shown on the callback page")
-    try:
-        payload = claude.complete_login(code.strip(), verifier, state)
-    except claude.ClaudeAuthError as exc:
-        raise SystemExit(f"awerouter: login failed: {exc}")
-    from datetime import datetime, timezone
-    expires = datetime.fromtimestamp(payload["expires_at"], tz=timezone.utc)
-    click.echo(f"claude login saved: {claude.claude_auth_path()}")
-    click.echo(f"  access token valid until {expires:%Y-%m-%d %H:%M} UTC (refreshed automatically)")
-
-
-@cli.command("logout")
-@click.argument("account", default="claude",
-                type=click.Choice(["claude", "codex"], case_sensitive=False))
-def logout_cmd(account):
-    """Remove a stored subscription login."""
-    account = account.lower()
-    if account == "codex":
-        click.echo("codex logins live in the codex CLI — run: codex logout")
-        return
-    from awerouter import claude
-    removed = claude.logout()
-    if removed is None:
-        click.echo(f"no claude login found ({claude.claude_auth_path()})")
-        return
-    click.echo(f"removed {removed}")
-
-
 @cli.command("self-update")
 @click.option("--check", "check_only", is_flag=True, help="Show versions without updating.")
 def self_update(check_only):
@@ -424,29 +370,6 @@ def list_profiles():
             f"{name}\t{p.protocol}\t{p.port or '-'}\t{flash.provider_name}/{flash.model}"
             f"\t{pro.provider_name}/{pro.model}\tL3>{threshold}"
         )
-
-
-@cli.command("restore")
-@click.argument("file", required=False,
-                type=click.Choice(["providers", "routing"], case_sensitive=False))
-def restore_cmd(file):
-    """Restore a config file from its .bak backup (providers | routing).
-
-    Backups are written by `config edit` and the `add` wizard before each write.
-    """
-    if file is None:
-        file = click.prompt("File to restore", type=click.Choice(["providers", "routing"]))
-    target = providers_path() if file == "providers" else routing_path()
-    bak = backup_path(target)
-    if not bak.exists():
-        die(f"no backup found: {bak}")
-    if not click.confirm(f"Restore {target} from {bak.name}? (overwrites the current file)"):
-        click.echo("aborted")
-        return
-    shutil.copy2(bak, target)
-    click.echo(f"restored {target}")
-    validate_profiles(load_providers(), load_routing()[1])
-    click.echo("config ok")
 
 
 def _passes_log(entry, cutoff, profile_name) -> bool:

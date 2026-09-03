@@ -144,7 +144,7 @@ class TestLoadClaudeLogin:
 
     def test_store_without_refresh_token_dies_with_hint(self, store_dir, monkeypatch):
         _write_store("at-1", refresh_token=None)
-        with pytest.raises(ClaudeAuthError, match="awerouter login claude"):
+        with pytest.raises(ClaudeAuthError, match="awerouter config login claude"):
             load_claude_login(force=True)
 
     def test_rejected_refresh_with_unchanged_store_dies(self, store_dir, monkeypatch):
@@ -171,7 +171,7 @@ class TestLoadClaudeLogin:
         assert load_claude_login() == "at-9"
 
     def test_missing_store_hints_login(self, store_dir):
-        with pytest.raises(ClaudeAuthError, match="awerouter login claude"):
+        with pytest.raises(ClaudeAuthError, match="awerouter config login claude"):
             load_claude_login()
 
     def test_broken_store_json(self, store_dir):
@@ -183,7 +183,7 @@ class TestLoadClaudeLogin:
     def test_store_without_access_token(self, store_dir):
         claude_auth_path().parent.mkdir(parents=True, exist_ok=True)
         claude_auth_path().write_text(json.dumps({"refresh_token": "rt"}), encoding="utf-8")
-        with pytest.raises(ClaudeAuthError, match="awerouter login claude"):
+        with pytest.raises(ClaudeAuthError, match="awerouter config login claude"):
             load_claude_login()
 
 

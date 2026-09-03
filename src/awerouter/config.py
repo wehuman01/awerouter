@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import difflib
 import ipaddress
 import json
@@ -877,6 +878,98 @@ def config_edit_cmd(file):
         os.execvp(editor, [editor, str(target)])
 
 
+@config.command("login")
+@click.argument("account", default="claude",
+                type=click.Choice(["claude", "codex"], case_sensitive=False))
+def config_login_cmd(account):
+    """Log in a subscription account used by an 'auth' sentinel provider."""
+    account = account.lower()
+    if account == "codex":
+        # The codex CLI owns its login (and its single-use refresh tokens);
+        # awerouter only reads auth.json, so the login happens in the CLI.
+        click.echo("codex logins live in the codex CLI — run: codex login")
+        click.echo("awerouter picks the result up from $CODEX_HOME/auth.json automatically.")
+        return
+    from awerouter import claude
+    if claude.login_status() is not None:
+        click.echo("an existing claude login will be replaced (its tokens become useless).")
+        if not click.confirm("Continue?"):
+            click.echo("aborted")
+            return
+    url, verifier, state = claude.begin_login()
+    click.echo("opening the browser to authorize awerouter as a Claude Code device…")
+    click.echo("(if it does not open, visit the URL below)")
+    click.echo()
+    click.echo(f"  {url}")
+    click.echo()
+    import webbrowser
+    webbrowser.open(url)
+    code = click.prompt("After authorizing, paste the code shown on the callback page")
+    try:
+        payload = claude.complete_login(code.strip(), verifier, state)
+    except claude.ClaudeAuthError as exc:
+        raise SystemExit(f"awerouter: login failed: {exc}")
+    from datetime import datetime, timezone
+    expires = datetime.fromtimestamp(payload["expires_at"], tz=timezone.utc)
+    click.echo(f"claude login saved: {claude.claude_auth_path()}")
+    click.echo(f"  access token valid until {expires:%Y-%m-%d %H:%M} UTC (refreshed automatically)")
+
+
+@config.command("logout")
+@click.argument("account", default="claude",
+                type=click.Choice(["claude", "codex"], case_sensitive=False))
+def config_logout_cmd(account):
+    """Remove a stored subscription login."""
+    account = account.lower()
+    if account == "codex":
+        click.echo("codex logins live in the codex CLI — run: codex logout")
+        return
+    from awerouter import claude
+    removed = claude.logout()
+    if removed is None:
+        click.echo(f"no claude login found ({claude.claude_auth_path()})")
+        return
+    click.echo(f"removed {removed}")
+
+
+@config.command("restore")
+@click.argument("file", required=False,
+                type=click.Choice(["providers", "routing"], case_sensitive=False))
+def config_restore_cmd(file):
+    """Restore a config file from its .bak backup (providers | routing).
+
+    Backups are written by `config edit` and the `add` wizard before each write.
+    """
+    if file is None:
+        file = click.prompt("File to restore", type=click.Choice(["providers", "routing"]))
+    target = providers_path() if file == "providers" else routing_path()
+    bak = backup_path(target)
+    if not bak.exists():
+        die(f"no backup found: {bak}")
+    if not click.confirm(f"Restore {target} from {bak.name}? (overwrites the current file)"):
+        click.echo("aborted")
+        return
+    shutil.copy2(bak, target)
+    click.echo(f"restored {target}")
+    validate_profiles(load_providers(), load_routing()[1])
+    click.echo("config ok")
+
+
+def _keep_old_spelling(cmd: click.Command) -> click.Command:
+    """Hidden top-level copy of a command that moved under `config`: the old
+    `awerouter <name>` spelling keeps working, while the top-level help lists
+    only the `config` form. A copy, not the same object — hiding the alias
+    must not hide the subcommand."""
+    alias = copy.copy(cmd)
+    alias.hidden = True
+    return alias
+
+
+cli.add_command(_keep_old_spelling(config_login_cmd))
+cli.add_command(_keep_old_spelling(config_logout_cmd))
+cli.add_command(_keep_old_spelling(config_restore_cmd))
+
+
 def _echo_merge_report(report: dict) -> None:
     if not (report["providers_added"] or report["profiles_added"] or report["settings_added"]):
         click.echo("nothing to merge; config already covers this template")
@@ -895,7 +988,7 @@ def _echo_merge_report(report: dict) -> None:
         click.echo(
             "warning: newly set in settings: " + ", ".join(report["behavior_shift"])
             + " — global keys that re-route image/fall-through behavior for every"
-            " existing profile. Undo with: awerouter restore routing"
+            " existing profile. Undo with: awerouter config restore routing"
         )
 
 

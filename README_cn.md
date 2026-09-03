@@ -54,7 +54,7 @@ Agent 会安装 CLI、初始化配置、帮你添加 profile，并通过 [aweski
 > "根据 usage 帮我调一下 longContextThreshold。"
 > "解释一下我的 usage savings。"
 
-Agent 可以直接运行只读命令（`list`、`config show`、`usage stats`、`usage calibrate`、`usage savings`）并编辑配置，但**不会**运行 `awerouter serve run`（常驻 daemon）、`awerouter add`（交互式向导）、`awerouter restore`（覆盖配置文件）、`awerouter usage clean`（删除日志）或 `awerouter self-update`（升级安装）。要启动 daemon，请在你自己的终端运行：
+Agent 可以直接运行只读命令（`list`、`config show`、`usage stats`、`usage calibrate`、`usage savings`）并编辑配置，但**不会**运行 `awerouter serve run`（常驻 daemon）、`awerouter add`（交互式向导）、`awerouter config restore`（覆盖配置文件）、`awerouter usage clean`（删除日志）或 `awerouter self-update`（升级安装）。要启动 daemon，请在你自己的终端运行：
 
 ```bash
 awerouter serve run cc-router-1
@@ -248,7 +248,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 
 ### Claude 账号（订阅登录）
 
-`anthropic` 组里的 `"auth": "claude"` 表示用 Claude Pro/Max 订阅登录作为上游。这个登录由 awerouter 自己持有（`awerouter login claude` 走 Claude Code 同款授权流程，token 存 `~/.config/awerouter/claude-auth.json`，权限 0600），不借用本机 CLI 的登录态。订阅自带的模型就这样和 key 计费的模型混进同一个 flash/pro 路由：
+`anthropic` 组里的 `"auth": "claude"` 表示用 Claude Pro/Max 订阅登录作为上游。这个登录由 awerouter 自己持有（`awerouter config login claude` 走 Claude Code 同款授权流程，token 存 `~/.config/awerouter/claude-auth.json`，权限 0600），不借用本机 CLI 的登录态。订阅自带的模型就这样和 key 计费的模型混进同一个 flash/pro 路由：
 
 ```json
 "anthropic": {
@@ -265,14 +265,14 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 ```
 
 ```bash
-awerouter login claude    # 打开浏览器授权，把回调页显示的 code 粘回来
-awerouter logout claude   # 删除本地登录
+awerouter config login claude    # 打开浏览器授权，把回调页显示的 code 粘回来
+awerouter config logout claude   # 删除本地登录
 ```
 
 任何说 Anthropic 协议的客户端把 base URL 指到 awerouter、填个哑 key 即可（Claude Code 设 `ANTHROPIC_BASE_URL`，CLI 自己的登录完全不受影响）；鉴权头和 OAuth 标记由 awerouter 每请求现盖，请求体不做改写。行为要点：
 
 - **刷新归 awerouter。** 与 codex 正相反：这个登录属于 awerouter，由它用 refresh token 自动续期，新 token 落盘后请求才继续。
-- **登录失效。** 401 先强制刷新重试一次；刷新后仍 401 则 flash 兜底到带 key 的 pro。登录缺失返回 503 并提示 `run: awerouter login claude`——和 codex 一样刻意不兜底。
+- **登录失效。** 401 先强制刷新重试一次；刷新后仍 401 则 flash 兜底到带 key 的 pro。登录缺失返回 503 并提示 `run: awerouter config login claude`——和 codex 一样刻意不兜底。
 - **感知系统代理。** 同 codex——api.anthropic.com 常需要代理才通。
 - **注意 ToS。** 端点和头集合是社区逆向的公开契约，随时可能失效；且 Anthropic 2026 年政策限制第三方工具使用订阅 OAuth token——骑你自己的订阅，风险自担。
 
@@ -507,11 +507,13 @@ awerouter serve run [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # 端口优先
 awerouter serve status                # 查看运行中的 serve 实例（前台 + 后台）
 awerouter serve stop [PROFILE]        # 停止全部运行实例，或只停某个 profile 的
 awerouter <PROFILE>                   # serve run 的简写（同样支持 -d）
-awerouter restore [providers|routing] # 从 .bak 备份恢复配置文件
 awerouter self-update [--check]        # 升级到最新 PyPI 版本（--check：只看版本不升级）
 awerouter config path                 # 打印两个配置文件路径
 awerouter config show [PROFILE]       # 脱敏全量配置；带 PROFILE 只看它的 provider 和条目
 awerouter config edit [providers|routing]  # 在 $EDITOR 中打开某个文件（先备份 .bak）
+awerouter config login [claude|codex]      # 登录订阅账号（claude：浏览器 PKCE 授权）
+awerouter config logout [claude|codex]     # 删除已保存的订阅登录
+awerouter config restore [providers|routing]  # 从 .bak 备份恢复配置文件
 awerouter usage stats
 awerouter usage clean                 # 删除已保存的请求日志（需确认）
 awerouter usage log [--lines 20] [--all] [--tokens]
@@ -524,7 +526,7 @@ awerouter usage savings
 
 `usage stats` 按 profile 汇总：label/destination/provider/model 分组（带百分比）、错误与降级计数、各 destination/provider/model 的延迟分位数（首字节与总时长）、估算请求 token（全部请求内容：messages、system prompt、工具定义与工具 I/O）。`--since` 接受 `today`、`yesterday`、`7d` 或 `YYYY-MM-DD`（本地时间）；`--profile` 只看单个 profile。`usage clean` 确认后删除已保存的日志（`requests.jsonl` 及轮转备份）。`usage log` 原样显示条目——默认最后 20 条，加 `--all` 显示全部；codex 登录重读重试过的请求带 `401-retry` 标记；`--tokens` 把 status/延迟/入站 model 三列换成每条请求的分类型 token 明细（`msg/sys/tools/results/calls/think`），分类型计数之前记录的条目只显示总数。
 
-`config edit` 和 `add` 向导在每次写入前把目标文件快照为 `<名称>.json.bak`；`awerouter restore [providers|routing]` 确认后把备份拷回并校验恢复后的配置。`config path` 打印两个配置文件路径；`config show [PROFILE]` 显示脱敏全量配置，或单个 profile 用到的 provider 与路由条目。
+`config edit` 和 `add` 向导在每次写入前把目标文件快照为 `<名称>.json.bak`；`awerouter config restore [providers|routing]` 确认后把备份拷回并校验恢复后的配置。`config path` 打印两个配置文件路径；`config show [PROFILE]` 显示脱敏全量配置，或单个 profile 用到的 provider 与路由条目。移动前的顶层拼法（`awerouter login` / `logout` / `restore`）作为隐藏别名继续可用。
 
 `self-update` 升级已安装的包——pipx 安装走 `pipx upgrade awerouter`，其余走 `pip install --upgrade`；升级后需重启运行中的 serve。每条命令还会在后台线程检查 PyPI（至多一天一次，缓存在配置目录的 `update-check.json`），发现新版本时在命令结束后输出一行提醒——提醒同样一天至多一次；`AWEROUTER_NO_UPDATE_CHECK=1` 可完全关闭检查。serve 启动横幅也会基于缓存检查结果显示更新提示。
 

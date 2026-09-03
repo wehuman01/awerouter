@@ -83,14 +83,14 @@ Rules:
 
 ## Subscription Logins
 
-Two auth sentinels ride subscription logins instead of API keys: `"auth": "codex"` (only in `openai-responses`; reads `$CODEX_HOME/auth.json`, default `~/.codex/auth.json`) and `"auth": "claude"` (only in `anthropic`; awerouter's own login via `awerouter login claude` — the same PKCE device flow Claude Code uses, tokens in `~/.config/awerouter/claude-auth.json`, mode 0600). Each sentinel only loads in its own protocol group because its backend speaks exactly one wire protocol.
+Two auth sentinels ride subscription logins instead of API keys: `"auth": "codex"` (only in `openai-responses`; reads `$CODEX_HOME/auth.json`, default `~/.codex/auth.json`) and `"auth": "claude"` (only in `anthropic`; awerouter's own login via `awerouter config login claude` — the same PKCE device flow Claude Code uses, tokens in `~/.config/awerouter/claude-auth.json`, mode 0600). Each sentinel only loads in its own protocol group because its backend speaks exactly one wire protocol.
 
 Refresh ownership follows who owns the login:
 
 - **codex — read-only.** OpenAI refresh tokens are single-use and rotating; refreshing here would invalidate the CLI's login, so the CLI keeps sole ownership. awerouter re-reads `auth.json` on every request, and once more on an upstream 401 (the CLI usually refreshed it). Access tokens live ~10 days — keep using `codex` (or awewarm) and the login stays fresh.
 - **claude — owned by awerouter.** The inverse design: access tokens are short-lived (~hours) and renewed with the rotating refresh token, the new pair persisted atomically before the request proceeds. An in-process lock plus a re-read under it keep concurrent requests from racing the refresh; a second awerouter process winning the race is recovered the same way (refresh rejected + file changed underneath → use the winner's token).
 
-401 ladder (both sentinels): one forced refresh/re-read and retry of the same destination; a 401 that survives means the login is dead — flash requests fall back to a keyed pro destination (one printed line each, `401-retry` marker in `usage log`), and the 401 surfaces to the client only when pro rides the same login. A missing login is a 503 with a login hint (`run: codex login` / `run: awerouter login claude`) plus a serve-start warning — deliberately no fallback, unlike a mid-session expiry: a missing login is a config error, and silently serving it from a paid pro would hide both the error and the bill.
+401 ladder (both sentinels): one forced refresh/re-read and retry of the same destination; a 401 that survives means the login is dead — flash requests fall back to a keyed pro destination (one printed line each, `401-retry` marker in `usage log`), and the 401 surfaces to the client only when pro rides the same login. A missing login is a 503 with a login hint (`run: codex login` / `run: awerouter config login claude`) plus a serve-start warning — deliberately no fallback, unlike a mid-session expiry: a missing login is a config error, and silently serving it from a paid pro would hide both the error and the bill.
 
 codex/claude providers honor `https_proxy`/`all_proxy` (chatgpt.com, api.anthropic.com, and platform.claude.com often need the proxy); every other provider always connects directly.
 

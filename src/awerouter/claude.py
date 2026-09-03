@@ -3,7 +3,7 @@
 A providers.json entry with "auth": "claude" routes through a Claude Pro/Max
 subscription login that awerouter itself owns — no local Claude Code CLI login
 is needed (and none is borrowed: the CLI keeps its own credentials when
-present; each OAuth login is an independent session). `awerouter login claude`
+present; each OAuth login is an independent session). `awerouter config login claude`
 runs the same PKCE device flow the Claude Code CLI uses:
 
   browser  {AUTHORIZE_URL}   (user logs in, pastes the shown code back here)
@@ -175,11 +175,11 @@ def _read_store() -> dict:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        raise ClaudeAuthError(f"claude login not found: {path} — run: awerouter login claude") from None
+        raise ClaudeAuthError(f"claude login not found: {path} — run: awerouter config login claude") from None
     except (OSError, json.JSONDecodeError) as exc:
         raise ClaudeAuthError(f"cannot read claude login {path}: {exc}") from None
     if not isinstance(payload, dict) or not isinstance(payload.get("access_token"), str):
-        raise ClaudeAuthError(f"no access_token in {path} — run: awerouter login claude")
+        raise ClaudeAuthError(f"no access_token in {path} — run: awerouter config login claude")
     return payload
 
 
@@ -203,7 +203,7 @@ def _refresh(payload: dict) -> dict:
     refresh_token = payload.get("refresh_token")
     if not isinstance(refresh_token, str) or not refresh_token:
         raise ClaudeAuthError(
-            "claude login has no refresh_token — run: awerouter login claude")
+            "claude login has no refresh_token — run: awerouter config login claude")
     resp = _token_request({
         "grant_type": "refresh_token",
         "client_id": CLIENT_ID,

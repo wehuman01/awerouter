@@ -54,7 +54,7 @@ The agent will install the CLI, init config, help you add profiles, and install 
 > "Tune longContextThreshold from my usage."
 > "Explain my usage savings."
 
-The agent can run read-only commands (`list`, `config show`, `usage stats`, `usage calibrate`, `usage savings`) and edit config directly, but it will **not** run `awerouter serve run` (long-lived daemon), `awerouter add` (interactive wizard), `awerouter restore` (overwrites config), `awerouter usage clean` (deletes logs), or `awerouter self-update` (upgrades the installation). To start the daemon, run it in your own terminal:
+The agent can run read-only commands (`list`, `config show`, `usage stats`, `usage calibrate`, `usage savings`) and edit config directly, but it will **not** run `awerouter serve run` (long-lived daemon), `awerouter add` (interactive wizard), `awerouter config restore` (overwrites config), `awerouter usage clean` (deletes logs), or `awerouter self-update` (upgrades the installation). To start the daemon, run it in your own terminal:
 
 ```bash
 awerouter serve run cc-router-1
@@ -248,7 +248,7 @@ The sentinel only loads in the `openai-responses` group — the ChatGPT Codex ba
 
 ### Claude account (subscription login)
 
-`"auth": "claude"` in the `anthropic` group routes through a Claude Pro/Max subscription login that awerouter itself owns (`awerouter login claude` runs the same authorization flow the CLI uses; tokens live in `~/.config/awerouter/claude-auth.json`, mode 0600) — the local Claude Code CLI login is never used. The subscription's own models mix into flash/pro routing next to key-based providers:
+`"auth": "claude"` in the `anthropic` group routes through a Claude Pro/Max subscription login that awerouter itself owns (`awerouter config login claude` runs the same authorization flow the CLI uses; tokens live in `~/.config/awerouter/claude-auth.json`, mode 0600) — the local Claude Code CLI login is never used. The subscription's own models mix into flash/pro routing next to key-based providers:
 
 ```json
 "anthropic": {
@@ -265,14 +265,14 @@ The sentinel only loads in the `openai-responses` group — the ChatGPT Codex ba
 ```
 
 ```bash
-awerouter login claude    # opens the browser; paste the code shown on the callback page
-awerouter logout claude   # removes the stored login
+awerouter config login claude    # opens the browser; paste the code shown on the callback page
+awerouter config logout claude   # removes the stored login
 ```
 
 Point any Anthropic-protocol client at awerouter with a dummy key (Claude Code via `ANTHROPIC_BASE_URL` — the CLI's own login is never touched); auth headers and the OAuth flag are injected per request, with no body rewriting. How it behaves:
 
 - **awerouter owns refresh.** The inverse of codex: this login belongs to awerouter, so it renews automatically with the refresh token, persisting the new one before the request proceeds.
-- **Dead login.** A 401 forces one refresh and retry; a 401 that survives means flash falls back to a keyed pro. A missing login is a 503 with a `run: awerouter login claude` hint — same deliberate no-fallback as codex.
+- **Dead login.** A 401 forces one refresh and retry; a 401 that survives means flash falls back to a keyed pro. A missing login is a 503 with a `run: awerouter config login claude` hint — same deliberate no-fallback as codex.
 - **Proxy-aware**, like codex — api.anthropic.com often needs the proxy.
 - **ToS caveat.** The endpoints and header set are the reverse-engineered public contract shared by community clients — they can break without notice; and per Anthropic's 2026 policy, third-party use of subscription OAuth tokens is ToS-restricted. This rides your own subscription, at your own risk.
 
@@ -507,11 +507,13 @@ awerouter serve run [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # port: --port
 awerouter serve status                # running serve instances (foreground + background)
 awerouter serve stop [PROFILE]        # stop all running instances, or one profile's
 awerouter <PROFILE>                   # shorthand for serve run PROFILE (also takes -d)
-awerouter restore [providers|routing] # restore a config file from its .bak backup
 awerouter self-update [--check]        # upgrade to the latest PyPI release (--check: versions only)
 awerouter config path                 # print both config file paths
 awerouter config show [PROFILE]       # redacted config; PROFILE = its providers + entry only
 awerouter config edit [providers|routing]  # open one file in $EDITOR (backs up to .bak first)
+awerouter config login [claude|codex]      # log in a subscription account (claude: browser PKCE)
+awerouter config logout [claude|codex]     # remove a stored subscription login
+awerouter config restore [providers|routing]  # restore a config file from its .bak backup
 awerouter usage stats [--since ..] [--profile ..]
 awerouter usage clean                 # delete saved request logs (asks to confirm)
 awerouter usage log [--lines 20] [--all] [--tokens] [--since ..] [--profile ..]
@@ -526,7 +528,7 @@ All `usage` subcommands read the same request log. `log`, `stats`, `tokens`, `ca
 
 `usage tokens` aggregates those per-type breakdowns: input-token totals and share by content type (messages, system prompt, tool definitions, tool results, tool-call arguments, thinking) — useful for seeing how much of a request's tokens are environment constants (system prompt + tool definitions) versus conversation.
 
-`config edit` and the `add` wizard snapshot the target file to `<name>.json.bak` before every write; `awerouter restore [providers|routing]` copies a backup back (with confirmation, then validates the restored config). `config path` prints the two config file paths; `config show [PROFILE]` shows the redacted full config, or just one profile's providers and routing entry.
+`config edit` and the `add` wizard snapshot the target file to `<name>.json.bak` before every write; `awerouter config restore [providers|routing]` copies a backup back (with confirmation, then validates the restored config). `config path` prints the two config file paths; `config show [PROFILE]` shows the redacted full config, or just one profile's providers and routing entry. The pre-move top-level spellings (`awerouter login` / `logout` / `restore`) keep working as hidden aliases.
 
 `self-update` upgrades the installed package — pipx installs use `pipx upgrade awerouter`, everything else `pip install --upgrade`; restart running serve instances afterwards. Every command also checks PyPI in a background thread (at most once a day, cached as `update-check.json` in the config dir) and prints a one-line reminder after the command when a newer release exists — also throttled to once a day; `AWEROUTER_NO_UPDATE_CHECK=1` disables the check entirely. The serve banner shows the same update hint from the cached check.
 

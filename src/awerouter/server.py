@@ -947,9 +947,9 @@ def _codex_login_warning(providers: dict) -> "str | None":
 
 def _claude_login_warning(providers: dict) -> "str | None":
     """Claude-login providers with no usable stored login — every request to
-    them 503s with an 'awerouter login claude' hint until the login exists.
-    Store check only: a present-but-stale token is fine (it refreshes on the
-    first request), so this never touches the network."""
+    them 503s with an 'awerouter config login claude' hint until the login
+    exists. Store check only: a present-but-stale token is fine (it refreshes
+    on the first request), so this never touches the network."""
     offenders = sorted(
         p.name for p in providers.values()
         if p.auth == CLAUDE_SENTINEL
@@ -961,11 +961,11 @@ def _claude_login_warning(providers: dict) -> "str | None":
             return None
         return (
             "warning: invalid claude login for providers: " + ", ".join(offenders) + "\n"
-            f"  ({claude_auth_path()} — re-run: awerouter login claude)"
+            f"  ({claude_auth_path()} — re-run: awerouter config login claude)"
         )
     return (
         "warning: no claude login for providers: " + ", ".join(offenders) + "\n"
-        f"  ({claude_auth_path()} — run: awerouter login claude)"
+        f"  ({claude_auth_path()} — run: awerouter config login claude)"
     )
 
 
