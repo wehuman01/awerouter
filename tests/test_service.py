@@ -278,6 +278,7 @@ class TestStopResident:
         _seed_instance(os.getpid(), svc="launchd")
         monkeypatch.setattr(service, "stop", lambda name: None)
         monkeypatch.setattr(runtime, "pid_alive", lambda pid: False)
+        _mock_launchctl(monkeypatch, [])
         r = CliRunner().invoke(cli, ["serve", "stop", "cc-1", "--purge"])
         assert r.exit_code == 0, r.output
         assert not plist.exists()
