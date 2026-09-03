@@ -1,10 +1,13 @@
 # Changelog
 
-## Unreleased
+## v0.5.7
 
 Resident services: `awerouter serve run <profile> --install` runs the daemon as a launchd agent on macOS or a systemd user unit on Linux. It starts at login (survives a reboot), relaunches after a crash, and `awerouter serve stop [PROFILE] [--purge]` controls it through the service manager instead of SIGTERM. The service bakes `${VAR}` auth values plus `AWEROUTER_*` and proxy variables into the file (mode 0600) because the service manager starts the daemon without your shell environment; missing referenced variables fail the install up front. Re-installing is the update path for host/port/env. `serve status` shows resident instances as `svc:launchd` / `svc:systemd` and lists installed-but-stopped services too. `awerouter serve all --install` covers gateway mode.
 
+Gateway direct forwards: providers can declare the models that may be selected directly (`"models": [...]` in their `providers.json` entry), and `awerouter serve all` then exposes `<provider>/<model>` names — such as `stepfun/step-3.7-flash` — as fixed forwards that bypass automatic routing and the flash→pro fallback. Undeclared or unknown models are rejected with a descriptive 400; existing configurations need no changes.
+
 ### Added
+- Gateway `<provider>/<model>` fixed forwards: providers declare `"models"` separately in each protocol group; a matching gateway request tracks a direct destination (skipping tier resolution, rtk/image-bridge adjust, and fallback), `/v1/models` lists the declared names, and unknown profile vs. undeclared model each return a distinct 400. Gateway app construction accepts global providers to populate the entries, with validation and test coverage.
 - `awerouter serve run [PROFILE] --install` and `awerouter serve all --install`: resident service install with env baking, startup-at-login, and crash relaunch. Idempotent re-install updates the job and restarts it.
 - `awerouter serve stop [PROFILE] --purge`: stops the resident instance and removes its service file so it no longer starts at login; plain `serve stop` stops the running instance but leaves it installed.
 - `serve status` resident-service awareness: running instances show `svc:launchd` / `svc:systemd`; installed-but-stopped services are listed with a remove hint.
