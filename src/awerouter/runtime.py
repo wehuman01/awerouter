@@ -58,20 +58,40 @@ def _is_awerouter_process(pid: int) -> bool:
     make `stop` signal an unrelated process. Matches on command tokens
     ("awerouter", "-m awerouter", ".../bin/awerouter"), not substrings — an
     interpreter living inside the awerouter repo must not count. Unverifiable
-    (no ps) → True."""
+    → True."""
+    cmdline = _read_cmdline(pid)
+    if cmdline is None:
+        return True
+    if cmdline == "":
+        return False  # process no longer exists
+    return any(
+        t == "awerouter" or t.endswith("/awerouter")
+        for t in cmdline.split()
+    )
+
+
+def _read_cmdline(pid: int) -> "str | None":
+    """Read the full command line of a process by pid.
+
+    Returns None when it cannot be read at all (→ unverifiable), "" when the
+    process no longer exists, and the command line otherwise."""
+    proc = Path(f"/proc/{pid}/cmdline")
+    if proc.exists():
+        try:
+            raw = proc.read_bytes()
+        except OSError:
+            return None
+        return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
     try:
         out = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],
             capture_output=True, text=True, timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
-        return True
+        return None
     if out.returncode != 0:
-        return False
-    return any(
-        t == "awerouter" or t.endswith("/awerouter")
-        for t in out.stdout.split()
-    )
+        return ""
+    return out.stdout
 
 
 def register(profile_name: str, protocol: str, port: int, host: str,

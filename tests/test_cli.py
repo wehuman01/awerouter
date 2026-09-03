@@ -5,6 +5,8 @@ import os
 import signal
 import subprocess
 
+import pytest
+
 from click.testing import CliRunner
 
 from awerouter import runtime
@@ -656,6 +658,7 @@ class TestStatus:
         assert "up " in r.output
 
 
+@pytest.mark.skipif(os.name == "nt", reason="awerouter stop is POSIX-only")
 class TestStop:
     def test_nothing_to_stop(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch)
@@ -719,6 +722,7 @@ class TestServeBackground:
         return {"pid": 4242, "profile": "cc-1", "protocol": "anthropic",
                 "port": port, "host": "127.0.0.1", "background": True}
 
+    @pytest.mark.skipif(os.name == "nt", reason="awerouter background serve is POSIX-only")
     def test_spawns_detached_daemon(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch, _providers(), _routing())
         monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
@@ -753,6 +757,7 @@ class TestServeBackground:
         assert r.exit_code == 0, r.output
         assert calls == [("cc-1", True)]
 
+    @pytest.mark.skipif(os.name == "nt", reason="awerouter background serve is POSIX-only")
     def test_passes_port_flag_through(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch, _providers(), _routing())
         monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
@@ -761,6 +766,7 @@ class TestServeBackground:
         assert r.exit_code == 0, r.output
         assert spawned["cmd"][spawned["cmd"].index("--port") + 1] == "3000"
 
+    @pytest.mark.skipif(os.name == "nt", reason="awerouter background serve is POSIX-only")
     def test_failed_child_dies_with_log_tail(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch, _providers(), _routing())
         monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
