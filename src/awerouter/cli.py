@@ -1,4 +1,4 @@
-"""CLI commands: serve / add / login / list / config / usage.
+"""CLI commands: serve (run/status/stop) / add / login / list / config / usage.
 
 Imports the click group from config.py and extends it.
 """
@@ -17,6 +17,7 @@ from awerouter import __version__
 from awerouter import runtime
 from awerouter.config import (
     DEFAULT_PORT,
+    ProfileGroup,
     SuggestGroup,
     backup_path,
     cli as config_cli,
@@ -68,7 +69,27 @@ def _run_serve(profile, port, host: str, background: bool = False) -> None:
         raise SystemExit(0)
 
 
-@cli.command()
+class ServeGroup(ProfileGroup):
+    """`serve` group where an unknown subcommand is a profile name, so the
+    pre-subcommand spelling `awerouter serve cc-router-1` keeps starting the
+    daemon (== `awerouter serve run cc-router-1`)."""
+
+    profile_hint = "awerouter serve run <profile> or awerouter <profile>"
+
+
+@cli.group(cls=ServeGroup, invoke_without_command=True,
+           context_settings={"help_option_names": ["-h", "--help"]})
+def serve():
+    """Start and manage the awerouter daemon (run / status / stop).
+
+    Bare `awerouter serve` keeps its old meaning: auto-select the profile and
+    run in the foreground. Options like -d belong to `serve run`.
+    """
+    if click.get_current_context().invoked_subcommand is None:
+        _run_serve(None, None, "127.0.0.1")
+
+
+@serve.command()
 @click.argument("profile", required=False)
 @click.option("--port", default=None, type=int,
               help="Listen port (overrides the profile's 'port'; default 20128).")
@@ -76,13 +97,13 @@ def _run_serve(profile, port, host: str, background: bool = False) -> None:
 @click.option("-d", "--background", is_flag=True, default=False,
               help="Detach and keep running after the terminal closes "
                    "(output -> serve-<profile>.log in the state dir).")
-def serve(profile, port: int, host: str, background: bool):
+def run(profile, port: int, host: str, background: bool):
     """Start the awerouter daemon for PROFILE.
 
     PROFILE is a profile id from routing.json. If omitted, auto-selects when only
     one profile exists. Config changes (routing.json / providers.json) hot-reload
     without a restart. With -d the daemon runs in the background; see
-    `awerouter status` and `awerouter stop`.
+    `awerouter serve status` and `awerouter serve stop`.
     """
     if background:
         _start_background(profile, port, host)
@@ -98,15 +119,17 @@ def serve(profile, port: int, host: str, background: bool):
               help="Detach and keep running after the terminal closes.")
 @click.pass_context
 def _serve_profile(ctx, port: int, host: str, background: bool):
-    """Bare profile launch: `awerouter <profile>` == `awerouter serve <profile>`."""
+    """Bare profile launch: `awerouter <profile>` and `awerouter serve <profile>`
+    == `awerouter serve run <profile>`."""
     _run_serve(ctx.meta["profile_name"], port, host, background)
 
 
 cli.add_command(_serve_profile)
+serve.add_command(_serve_profile)
 
 
-# How long `serve -d` waits for the detached child to bind + register before
-# giving up and reporting the log tail.
+# How long `serve run -d` waits for the detached child to bind + register
+# before giving up and reporting the log tail.
 _BG_STARTUP_TIMEOUT_S = 15.0
 
 
@@ -150,7 +173,7 @@ def _start_background(profile, port, host: str) -> None:
     print(f"awerouter {prof.name} running in background (pid {inst['pid']})")
     print(f"  listening -> {inst['host']}:{inst['port']}  [{inst['protocol']}]")
     print(f"  log       -> {log}")
-    print(f"  manage    -> awerouter status | awerouter stop {prof.name}")
+    print(f"  manage    -> awerouter serve status | awerouter serve stop {prof.name}")
 
 
 def _log_tail(log: Path, lines: int = 15) -> str:
@@ -166,7 +189,7 @@ def _log_tail(log: Path, lines: int = 15) -> str:
               help="Listen port (overrides the profile's 'port'; default 20128).")
 @click.option("--host", default="127.0.0.1", show_default=True, help="Bind address.")
 def _serve_daemon(profile, port: int, host: str):
-    """Foreground child of `serve --background` (registered as background)."""
+    """Foreground child of `serve run --background` (registered as background)."""
     try:
         sys.stdout.reconfigure(line_buffering=True)  # log file is block-buffered otherwise
     except (AttributeError, ValueError):  # non-tty/stdout replacement without reconfigure
@@ -193,13 +216,13 @@ def _fmt_uptime(started) -> str:
     return f"{d}d{h}h"
 
 
-@cli.command("status")
+@serve.command("status")
 def status_cmd():
     """Show running serve instances (foreground and background)."""
     instances = runtime.list_instances()
     if not instances:
         click.echo("(no running instances)")
-        click.echo("start one: awerouter serve <profile>   (add -d to run in the background)")
+        click.echo("start one: awerouter serve run <profile>   (add -d to run in the background)")
         return
     for inst in sorted(instances, key=lambda i: (i["profile"], i["port"])):
         mode = "bg" if inst.get("background") else "fg"
@@ -210,7 +233,7 @@ def status_cmd():
         )
 
 
-@cli.command("stop")
+@serve.command("stop")
 @click.argument("profile", required=False)
 def stop_cmd(profile):
     """Stop running serve instances (all of them, or PROFILE's only)."""

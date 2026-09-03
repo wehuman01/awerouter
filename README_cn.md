@@ -54,10 +54,10 @@ Agent 会安装 CLI、初始化配置、帮你添加 profile，并通过 [aweski
 > "根据 usage 帮我调一下 longContextThreshold。"
 > "解释一下我的 usage savings。"
 
-Agent 可以直接运行只读命令（`list`、`config show`、`usage stats`、`usage calibrate`、`usage savings`）并编辑配置，但**不会**运行 `awerouter serve`（常驻 daemon）、`awerouter add`（交互式向导）、`awerouter restore`（覆盖配置文件）、`awerouter usage clean`（删除日志）或 `awerouter self-update`（升级安装）。要启动 daemon，请在你自己的终端运行：
+Agent 可以直接运行只读命令（`list`、`config show`、`usage stats`、`usage calibrate`、`usage savings`）并编辑配置，但**不会**运行 `awerouter serve run`（常驻 daemon）、`awerouter add`（交互式向导）、`awerouter restore`（覆盖配置文件）、`awerouter usage clean`（删除日志）或 `awerouter self-update`（升级安装）。要启动 daemon，请在你自己的终端运行：
 
 ```bash
-awerouter serve cc-router-1
+awerouter serve run cc-router-1
 ```
 
 #### awerouter skill
@@ -80,7 +80,7 @@ awerouter 配置好后，用一个指向 daemon 的 aweswitch profile，就能�
 先在一个终端用 openai-chat profile 启动 daemon：
 
 ```bash
-awerouter serve oc-router-1
+awerouter serve run oc-router-1
 ```
 
 然后在 aweswitch 配置里加一个指向它的 OpenCode profile：
@@ -127,8 +127,8 @@ awerouter add
 #    或者手改：编辑 providers.json 填密钥（${ENV_VAR}），编辑 routing.json 映射 flash/pro
 
 # 3. 启动 daemon（只有一个 profile 时名字可省）
-awerouter serve [cc-router-1]     # 等价简写：awerouter cc-router-1
-#    加 -d 后台常驻运行：awerouter serve cc-router-1 -d
+awerouter serve run [cc-router-1]  # 等价简写：awerouter cc-router-1 | awerouter serve cc-router-1
+#    加 -d 后台常驻运行：awerouter serve run cc-router-1 -d
 #    （终端关掉也不停；日志：~/.local/state/awerouter/serve-<profile>.log）
 
 # 4. 让 CC 指向它 —— serve 启动横幅会直接打印下面这两行
@@ -206,7 +206,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 
 ```bash
 ollama pull qwen3-coder:30b      # 本地服务默认监听 127.0.0.1:11434
-awerouter serve cc-router-1
+awerouter serve run cc-router-1
 export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 ```
 
@@ -432,7 +432,7 @@ settings 的每个键也都可以**直接写在 profile 体内**，与 `protocol
 
 密钥用 `${ENV_VAR}` 引用。缺失的环境变量在启动时报错退出。
 
-> **基于 profile 的路由：** `routing.json` 用 profile id 分组（类似 aweswitch）。`awerouter serve <profile>` 启动其中一个；只有一个 profile 时自动选择。`protocol` 字段把 profile 映射到 providers.json 的分组，并决定它服务哪个端点——serve 横幅按协议打印对应客户端的环境变量（anthropic → Claude Code 的 `ANTHROPIC_BASE_URL`；openai 协议 → `OPENAI_BASE_URL` / Codex `wire_api`）。它可以写单个 id，也可以写列表：`"protocol": ["anthropic", "openai-chat"]` 让一个端口同时服务两种线协议——客户端按端点路径自选（`/v1/messages` 还是 `/v1/chat/completions`），每种协议走自己的 provider 组，且每个 destination provider 必须在每个被服务分组里都存在（各自协议的 `base_url`）。注意：openai 客户端是单 model 配置，L2 档位匹配基本不触发——openai 流量走 L1 + L3，默认 flash。
+> **基于 profile 的路由：** `routing.json` 用 profile id 分组（类似 aweswitch）。`awerouter serve run <profile>` 启动其中一个；只有一个 profile 时自动选择。`protocol` 字段把 profile 映射到 providers.json 的分组，并决定它服务哪个端点——serve 横幅按协议打印对应客户端的环境变量（anthropic → Claude Code 的 `ANTHROPIC_BASE_URL`；openai 协议 → `OPENAI_BASE_URL` / Codex `wire_api`）。它可以写单个 id，也可以写列表：`"protocol": ["anthropic", "openai-chat"]` 让一个端口同时服务两种线协议——客户端按端点路径自选（`/v1/messages` 还是 `/v1/chat/completions`），每种协议走自己的 provider 组，且每个 destination provider 必须在每个被服务分组里都存在（各自协议的 `base_url`）。注意：openai 客户端是单 model 配置，L2 档位匹配基本不触发——openai 流量走 L1 + L3，默认 flash。
 
 > **端口分配：** 可选的 `port` 字段为 profile 固定监听端口（`awerouter list` 会显示）；优先级：`--port` 参数 > profile `port` > 默认 20128。显式指定的端口被占用时直接报错退出——客户端写死了它，不能悄悄漂移。不配置端口时，serve 从 20128 起向上找第一个空闲端口：第一个实例拿 20128，下一个 20129，依次顺延——按启动顺序分配，与 profile 无关。一次只跑一个实例的热切换用法：profile 不配端口、客户端固定指向 20128 即可。
 
@@ -484,16 +484,16 @@ L4 是后果检查点，不是难度猜测：代码刚被改写的**下一轮**�
 
 ## 后台运行与热加载
 
-`awerouter serve <profile> -d` 让 daemon 脱离终端常驻运行——终端关掉也不停，输出追加到 `~/.local/state/awerouter/serve-<profile>.log`（每个 profile 一个文件）。命令本身会等 daemon 绑定端口后打印 pid、端口和日志路径；如果该 profile 已经在跑也会提示（仍然照常再起一个实例——同 profile，端口顺延）。
+`awerouter serve run <profile> -d` 让 daemon 脱离终端常驻运行——终端关掉也不停，输出追加到 `~/.local/state/awerouter/serve-<profile>.log`（每个 profile 一个文件）。命令本身会等 daemon 绑定端口后打印 pid、端口和日志路径；如果该 profile 已经在跑也会提示（仍然照常再起一个实例——同 profile，端口顺延）。
 
 每个 serve 实例——无论前台还是后台——绑定端口时都会在 `~/.local/state/awerouter/run/` 注册自己，因此一条命令就能看到全部实例：
 
 ```bash
-awerouter status              # profile、fg/bg、pid、host:port、协议、运行时长
-awerouter stop [PROFILE]      # SIGTERM 全部实例，或只停某个 profile 的（优雅退出）
+awerouter serve status           # profile、fg/bg、pid、host:port、协议、运行时长
+awerouter serve stop [PROFILE]   # SIGTERM 全部实例，或只停某个 profile 的（优雅退出）
 ```
 
-注册文件按 pid 命名；进程已不存在的条目会自动清理。`stop` 拒绝向命令行已不像 awerouter 的 pid 发信号（进程被 -9 杀死后 pid 被复用的保护）。`-d`/`stop` 仅支持 POSIX 系统。
+注册文件按 pid 命名；进程已不存在的条目会自动清理。`serve stop` 拒绝向命令行已不像 awerouter 的 pid 发信号（进程被 -9 杀死后 pid 被复用的保护）。`-d`/`serve stop` 仅支持 POSIX 系统。
 
 serve 还会监听 `routing.json` 和 `providers.json` 的修改（每秒轮询 mtime）并热加载：destinations、阈值、tool routing、settings 覆盖、provider 条目——包括整体换掉 profile 的 provider——都无需重启、下一条请求即生效。文件加载失败（保存到一半、JSON 写坏）只提示一次，上一份可用配置继续服务，直到文件重新可解析；唯一不能热加载的是监听端口——改了 `port` 字段，serve 会打印需要重启的提示而不是重绑。
 
@@ -503,10 +503,10 @@ serve 还会监听 `routing.json` 和 `providers.json` 的修改（每秒轮询 
 awerouter init [TEMPLATE]             # 从内置模板创建配置（default / step-glm / glm-codex / step-glm-mm）；--merge 把模板补进已有配置
 awerouter add                         # 交互式添加 profile（先选类别再选 provider）
 awerouter list                        # 列出 profile（名字、协议、端口、flash、pro、阈值）
-awerouter serve [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # 端口优先级：--port > profile 'port' > 20128；-d 后台运行
-awerouter <PROFILE>                   # serve 的简写（同样支持 -d）
-awerouter status                      # 查看运行中的 serve 实例（前台 + 后台）
-awerouter stop [PROFILE]              # 停止全部运行实例，或只停某个 profile 的
+awerouter serve run [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # 端口优先级：--port > profile 'port' > 20128；-d 后台运行
+awerouter serve status                # 查看运行中的 serve 实例（前台 + 后台）
+awerouter serve stop [PROFILE]        # 停止全部运行实例，或只停某个 profile 的
+awerouter <PROFILE>                   # serve run 的简写（同样支持 -d）
 awerouter restore [providers|routing] # 从 .bak 备份恢复配置文件
 awerouter self-update [--check]        # 升级到最新 PyPI 版本（--check：只看版本不升级）
 awerouter config path                 # 打印两个配置文件路径

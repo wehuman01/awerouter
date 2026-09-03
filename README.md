@@ -54,10 +54,10 @@ The agent will install the CLI, init config, help you add profiles, and install 
 > "Tune longContextThreshold from my usage."
 > "Explain my usage savings."
 
-The agent can run read-only commands (`list`, `config show`, `usage stats`, `usage calibrate`, `usage savings`) and edit config directly, but it will **not** run `awerouter serve` (long-lived daemon), `awerouter add` (interactive wizard), `awerouter restore` (overwrites config), `awerouter usage clean` (deletes logs), or `awerouter self-update` (upgrades the installation). To start the daemon, run it in your own terminal:
+The agent can run read-only commands (`list`, `config show`, `usage stats`, `usage calibrate`, `usage savings`) and edit config directly, but it will **not** run `awerouter serve run` (long-lived daemon), `awerouter add` (interactive wizard), `awerouter restore` (overwrites config), `awerouter usage clean` (deletes logs), or `awerouter self-update` (upgrades the installation). To start the daemon, run it in your own terminal:
 
 ```bash
-awerouter serve cc-router-1
+awerouter serve run cc-router-1
 ```
 
 #### awerouter skill
@@ -80,7 +80,7 @@ Once awerouter is configured, launch any agent through it by pointing an aweswit
 Start the daemon with an openai-chat profile in one terminal:
 
 ```bash
-awerouter serve oc-router-1
+awerouter serve run oc-router-1
 ```
 
 Add an aweswitch OpenCode profile pointing at it:
@@ -127,8 +127,8 @@ awerouter add
 #    or edit by hand: providers.json for keys (${ENV_VAR}), routing.json for flash/pro
 
 # 3. Start the daemon (profile name optional when only one exists)
-awerouter serve [cc-router-1]     # shorthand: awerouter cc-router-1
-#    add -d to run it in the background: awerouter serve cc-router-1 -d
+awerouter serve run [cc-router-1]  # shorthands: awerouter cc-router-1 | awerouter serve cc-router-1
+#    add -d to run it in the background: awerouter serve run cc-router-1 -d
 #    (survives the terminal; log: ~/.local/state/awerouter/serve-<profile>.log)
 
 # 4. Point CC at it — the serve banner prints both lines below
@@ -206,7 +206,7 @@ End to end with Ollama, flash=local / pro=cloud:
 
 ```bash
 ollama pull qwen3-coder:30b      # local server listens on 127.0.0.1:11434 by default
-awerouter serve cc-router-1
+awerouter serve run cc-router-1
 export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 ```
 
@@ -432,7 +432,7 @@ Settings keys, their defaults, and what each one steers (all of them settable gl
 
 Keys reference `${ENV_VAR}` syntax. Missing env vars die with a clear message at startup.
 
-> **Profile-based routing:** `routing.json` groups configs under profile ids (like aweswitch). `awerouter serve <profile>` starts one; with a single profile it auto-selects. `protocol` maps the profile to a providers.json group and decides which endpoint it serves — the serve banner prints the matching client env (`ANTHROPIC_BASE_URL` for Claude Code, `OPENAI_BASE_URL` / Codex `wire_api` for the openai protocols). It accepts a single id or a list: `"protocol": ["anthropic", "openai-chat"]` serves both wire protocols on one port — clients pick by endpoint path (`/v1/messages` vs `/v1/chat/completions`), each protocol forwards through its own provider group, and every destination provider must exist in each served group (per-protocol `base_url`s). Note: openai clients are single-model, so L2 tier labels effectively never fire for them — openai traffic routes by L1 + L3 with a flash default.
+> **Profile-based routing:** `routing.json` groups configs under profile ids (like aweswitch). `awerouter serve run <profile>` starts one; with a single profile it auto-selects. `protocol` maps the profile to a providers.json group and decides which endpoint it serves — the serve banner prints the matching client env (`ANTHROPIC_BASE_URL` for Claude Code, `OPENAI_BASE_URL` / Codex `wire_api` for the openai protocols). It accepts a single id or a list: `"protocol": ["anthropic", "openai-chat"]` serves both wire protocols on one port — clients pick by endpoint path (`/v1/messages` vs `/v1/chat/completions`), each protocol forwards through its own provider group, and every destination provider must exist in each served group (per-protocol `base_url`s). Note: openai clients are single-model, so L2 tier labels effectively never fire for them — openai traffic routes by L1 + L3 with a flash default.
 
 > **Ports:** the optional `port` field pins a profile's listen port (`awerouter list` shows it); precedence: `--port` flag > profile `port` > 20128 default. An explicitly chosen port that is already in use fails loudly — clients hardcode it, it must not silently move. Without one, serve takes the first free port scanning up from 20128: the first instance gets 20128, the next 20129, and so on — the assignment follows start order, not the profile. For the one-instance-at-a-time swap workflow, leave profiles portless and point clients at 20128.
 
@@ -484,16 +484,16 @@ Compression is inspired by [rtk](https://github.com/rtk-ai/rtk) (Apache 2.0) and
 
 ## Background serving & hot reload
 
-`awerouter serve <profile> -d` runs the daemon detached — it keeps serving after the terminal closes, logging to `~/.local/state/awerouter/serve-<profile>.log` (append; one file per profile). The command waits for the daemon to bind and prints its pid, port, and log path; it also notes when the profile is already running (it starts another instance anyway — same profile, next port).
+`awerouter serve run <profile> -d` runs the daemon detached — it keeps serving after the terminal closes, logging to `~/.local/state/awerouter/serve-<profile>.log` (append; one file per profile). The command waits for the daemon to bind and prints its pid, port, and log path; it also notes when the profile is already running (it starts another instance anyway — same profile, next port).
 
 Every serve instance — foreground or background — registers itself under `~/.local/state/awerouter/run/` at bind time, so one command sees them all:
 
 ```bash
-awerouter status              # profile, fg/bg, pid, host:port, protocol, uptime
-awerouter stop [PROFILE]      # SIGTERM all instances, or one profile's (graceful shutdown)
+awerouter serve status           # profile, fg/bg, pid, host:port, protocol, uptime
+awerouter serve stop [PROFILE]   # SIGTERM all instances, or one profile's (graceful shutdown)
 ```
 
-Registration files are keyed by pid; entries whose process no longer exists are pruned automatically, and `stop` refuses to signal a pid whose command line no longer looks like awerouter (a reused pid after an unclean kill). `-d`/`stop` are POSIX-only.
+Registration files are keyed by pid; entries whose process no longer exists are pruned automatically, and `serve stop` refuses to signal a pid whose command line no longer looks like awerouter (a reused pid after an unclean kill). `-d`/`serve stop` are POSIX-only.
 
 Serve also watches `routing.json` and `providers.json` (1s mtime poll) and hot-reloads changes: destinations, thresholds, tool routing, settings overrides, provider entries — even switching the profile's providers — apply to the next request without a restart. A file that fails to load (mid-save partial write, broken JSON) is announced once and the previous config keeps serving until the file parses again; the one thing a reload cannot do is rebind the listen port — change the `port` field and serve prints a restart hint instead.
 
@@ -503,10 +503,10 @@ Serve also watches `routing.json` and `providers.json` (1s mtime poll) and hot-r
 awerouter init [TEMPLATE]             # create config from a bundled template (default / step-glm / glm-codex / step-glm-mm); --merge fills it into an existing config
 awerouter add                         # interactively add a profile (pick category and providers)
 awerouter list                        # list profiles (name, protocol, port, flash, pro, threshold)
-awerouter serve [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # port: --port > profile 'port' > 20128; -d runs in background
-awerouter <PROFILE>                   # shorthand for serve PROFILE (also takes -d)
-awerouter status                      # running serve instances (foreground + background)
-awerouter stop [PROFILE]              # stop all running instances, or one profile's
+awerouter serve run [PROFILE] [--port N] [--host 127.0.0.1] [-d]  # port: --port > profile 'port' > 20128; -d runs in background
+awerouter serve status                # running serve instances (foreground + background)
+awerouter serve stop [PROFILE]        # stop all running instances, or one profile's
+awerouter <PROFILE>                   # shorthand for serve run PROFILE (also takes -d)
 awerouter restore [providers|routing] # restore a config file from its .bak backup
 awerouter self-update [--check]        # upgrade to the latest PyPI release (--check: versions only)
 awerouter config path                 # print both config file paths

@@ -597,6 +597,37 @@ class TestBareProfileLaunch:
         assert calls == []  # list ran, serve never did
 
 
+class TestServeGroup:
+    def test_bare_serve_auto_selects(self, tmp_path, monkeypatch):
+        """Bare `awerouter serve` keeps its pre-group meaning: auto-select."""
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        calls = []
+        monkeypatch.setattr("awerouter.cli._run_serve",
+                            lambda p, port, host, background=False: calls.append((p, port, host)))
+        r = CliRunner().invoke(cli, ["serve"])
+        assert r.exit_code == 0, r.output
+        assert calls == [(None, None, "127.0.0.1")]
+
+    def test_run_takes_profile(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        calls = []
+        monkeypatch.setattr("awerouter.cli._run_serve",
+                            lambda p, port, host, background=False: calls.append(p))
+        r = CliRunner().invoke(cli, ["serve", "run", "cc-1"])
+        assert r.exit_code == 0, r.output
+        assert calls == ["cc-1"]
+
+    def test_profile_shorthand_still_starts(self, tmp_path, monkeypatch):
+        """`awerouter serve <profile>` (pre-subcommand spelling) keeps working."""
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        calls = []
+        monkeypatch.setattr("awerouter.cli._run_serve",
+                            lambda p, port, host, background=False: calls.append((p, port, host)))
+        r = CliRunner().invoke(cli, ["serve", "cc-1", "--port", "20999"])
+        assert r.exit_code == 0, r.output
+        assert calls == [("cc-1", 20999, "127.0.0.1")]
+
+
 def _seed_instance(pid, profile="cc-1", port=20128, background=True):
     runtime.run_dir().mkdir(parents=True, exist_ok=True)
     runtime._pid_file(pid).write_text(json.dumps({
@@ -610,16 +641,16 @@ class TestStatus:
     def test_empty(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch)
         monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
-        r = CliRunner().invoke(cli, ["status"])
+        r = CliRunner().invoke(cli, ["serve", "status"])
         assert r.exit_code == 0, r.output
         assert "(no running instances)" in r.output
-        assert "awerouter serve <profile>" in r.output
+        assert "awerouter serve run <profile>" in r.output
 
     def test_lists_foreground_and_background(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch)
         monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
         _seed_instance(os.getpid(), profile="cc-1", port=20128, background=False)
-        r = CliRunner().invoke(cli, ["status"])
+        r = CliRunner().invoke(cli, ["serve", "status"])
         assert r.exit_code == 0, r.output
         assert f"cc-1\tfg\tpid {os.getpid()}\t127.0.0.1:20128\t[anthropic]" in r.output
         assert "up " in r.output
@@ -629,7 +660,7 @@ class TestStop:
     def test_nothing_to_stop(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch)
         monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
-        r = CliRunner().invoke(cli, ["stop"])
+        r = CliRunner().invoke(cli, ["serve", "stop"])
         assert r.exit_code == 0, r.output
         assert "(nothing to stop)" in r.output
 
@@ -637,7 +668,7 @@ class TestStop:
         _setup(tmp_path, monkeypatch)
         monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
         _seed_instance(os.getpid(), profile="cc-1")
-        r = CliRunner().invoke(cli, ["stop", "cc-2"])
+        r = CliRunner().invoke(cli, ["serve", "stop", "cc-2"])
         assert r.exit_code == 0, r.output
         assert "no running instance for profile 'cc-2'" in r.output
 
@@ -656,7 +687,7 @@ class TestStop:
         monkeypatch.setattr(runtime, "_is_awerouter_process", lambda pid: True)
         monkeypatch.setattr(runtime, "pid_alive", lambda pid: state["alive"])
         monkeypatch.setattr(os, "kill", fake_kill)
-        r = CliRunner().invoke(cli, ["stop", "cc-1"])
+        r = CliRunner().invoke(cli, ["serve", "stop", "cc-1"])
         assert r.exit_code == 0, r.output
         assert killed == [os.getpid()]
         assert f"stopped cc-1 (pid {os.getpid()}, port 20128)" in r.output
@@ -664,7 +695,7 @@ class TestStop:
 
 
 class TestServeBackground:
-    """`serve -d` spawns the detached daemon and reports its registration."""
+    """`serve run -d` spawns the detached daemon and reports its registration."""
 
     @staticmethod
     def _child(pid=4242, returncode=None):
@@ -692,7 +723,7 @@ class TestServeBackground:
         _setup(tmp_path, monkeypatch, _providers(), _routing())
         monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
         spawned = self._patch_spawn(monkeypatch, self._child(), self._instance())
-        r = CliRunner().invoke(cli, ["serve", "cc-1", "-d"])
+        r = CliRunner().invoke(cli, ["serve", "run", "cc-1", "-d"])
         assert r.exit_code == 0, r.output
         cmd = spawned["cmd"]
         assert cmd[1:4] == ["-m", "awerouter", "__serve_daemon__"]
@@ -701,15 +732,32 @@ class TestServeBackground:
         assert spawned["kwargs"]["stdin"] is subprocess.DEVNULL
         assert "running in background (pid 4242)" in r.output
         assert "127.0.0.1:20128" in r.output
-        assert "awerouter stop cc-1" in r.output
+        assert "awerouter serve stop cc-1" in r.output
         # daemon log lives under the state dir
         assert str(tmp_path / "state" / "serve-cc-1.log") in r.output
+
+    def test_old_profile_shorthand_keeps_background(self, tmp_path, monkeypatch):
+        """`awerouter serve <profile> -d` (pre-subcommand spelling) still flags bg.
+
+        The shorthand runs serve in-process (registered as background), so the
+        assertion patches _serve, not the detached-spawn path."""
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        calls = []
+
+        async def fake_serve(host, port, providers, profile, settings,
+                             port_explicit=False, background=False):
+            calls.append((profile.name, background))
+
+        monkeypatch.setattr("awerouter.cli._serve", fake_serve)
+        r = CliRunner().invoke(cli, ["serve", "cc-1", "-d"])
+        assert r.exit_code == 0, r.output
+        assert calls == [("cc-1", True)]
 
     def test_passes_port_flag_through(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch, _providers(), _routing())
         monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
         spawned = self._patch_spawn(monkeypatch, self._child(), self._instance(port=3000))
-        r = CliRunner().invoke(cli, ["serve", "cc-1", "-d", "--port", "3000"])
+        r = CliRunner().invoke(cli, ["serve", "run", "cc-1", "-d", "--port", "3000"])
         assert r.exit_code == 0, r.output
         assert spawned["cmd"][spawned["cmd"].index("--port") + 1] == "3000"
 
@@ -721,7 +769,7 @@ class TestServeBackground:
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text("awerouter: port 20128 is already in use\n")
         self._patch_spawn(monkeypatch, self._child(returncode=1), None)
-        r = CliRunner().invoke(cli, ["serve", "cc-1", "-d"])
+        r = CliRunner().invoke(cli, ["serve", "run", "cc-1", "-d"])
         assert r.exit_code != 0
         assert "failed to start" in r.output
         assert "already in use" in r.output
@@ -843,6 +891,12 @@ class TestCommandSuggestions:
         r = CliRunner().invoke(cli, ["usage", "statsx"])
         assert r.exit_code != 0
         assert "did you mean 'stats'" in r.output
+
+    def test_serve_group_typo_suggests_subcommand(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        r = CliRunner().invoke(cli, ["serve", "statsu"])
+        assert r.exit_code != 0
+        assert "did you mean 'status'" in r.output
 
     def test_config_group_typo_suggests_subcommand(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch, _providers(), _routing())

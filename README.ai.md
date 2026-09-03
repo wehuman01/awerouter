@@ -10,9 +10,9 @@ This document is for AI coding agents. Help the user install and configure `awer
 
 ## Do Not Launch Servers
 
-**Never run `awerouter serve` inside this agent.** It starts a long-lived proxy session. Always tell the user to run it in their own terminal.
+**Never run `awerouter serve run` inside this agent.** It starts a long-lived proxy session. Always tell the user to run it in their own terminal.
 
-You may run these read-only or non-interactive commands: `awerouter init`, `awerouter config path`, `awerouter config show`, `awerouter config edit`, `awerouter list`, `awerouter status` (read-only instance listing), `awerouter usage stats`, `awerouter usage log`, `awerouter usage calibrate`, `awerouter usage savings`.
+You may run these read-only or non-interactive commands: `awerouter init`, `awerouter config path`, `awerouter config show`, `awerouter config edit`, `awerouter list`, `awerouter serve status` (read-only instance listing), `awerouter usage stats`, `awerouter usage log`, `awerouter usage calibrate`, `awerouter usage savings`.
 
 Do not run `awerouter add` inside the agent — it is interactive and would block the session.
 
@@ -188,7 +188,7 @@ If the user is unsure, recommend starting from `awerouter init` and changing one
 
 ## Step 5: Set up environment variables
 
-Provider auth uses `${ENV_VAR}` references that expand from the shell environment. These must be set before starting `awerouter serve`. Providers without an `auth` key (local model servers) need no environment variable.
+Provider auth uses `${ENV_VAR}` references that expand from the shell environment. These must be set before starting `awerouter serve run`. Providers without an `auth` key (local model servers) need no environment variable.
 
 ### Where to put them
 
@@ -231,7 +231,7 @@ Do not pass `/M` to `setx` — that targets machine scope and requires admin.
 
 ## Step 6: Point the client at awerouter
 
-Set the client's base URL to the awerouter daemon port shown by `awerouter serve`.
+Set the client's base URL to the awerouter daemon port shown by `awerouter serve run`.
 
 Common setups:
 - Claude Code -> `ANTHROPIC_BASE_URL=http://127.0.0.1:20128`
@@ -239,11 +239,11 @@ Common setups:
 
 Tell the user to start the daemon themselves:
 ```bash
-awerouter serve [profile-name]          # foreground
-awerouter serve [profile-name] -d       # background: survives the terminal, log in ~/.local/state/awerouter/serve-<profile>.log
+awerouter serve run [profile-name]          # foreground
+awerouter serve run [profile-name] -d       # background: survives the terminal, log in ~/.local/state/awerouter/serve-<profile>.log
 ```
 
-If only one routing profile exists, the profile name is optional. Either way, `awerouter status` shows every running instance (foreground and background) and `awerouter stop [PROFILE]` stops them. Config edits (routing.json / providers.json) hot-reload without a restart — a broken file keeps the previous config serving until it parses again.
+If only one routing profile exists, the profile name is optional. Either way, `awerouter serve status` shows every running instance (foreground and background) and `awerouter serve stop [PROFILE]` stops them. Config edits (routing.json / providers.json) hot-reload without a restart — a broken file keeps the previous config serving until it parses again.
 
 ---
 
@@ -296,7 +296,7 @@ https://github.com/Webioinfo01/aweswitch/blob/main/README.ai.md
 
 ## Safety Rules
 
-- Do not run `awerouter serve` inside the agent.
+- Do not run `awerouter serve run` inside the agent.
 - Do not hardcode secrets into config files.
 - Do not edit `providers.json` and `routing.json` in the same step unless the user explicitly asks.
 - If a command fails, report the exact command and error message.

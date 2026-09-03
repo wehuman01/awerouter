@@ -493,7 +493,7 @@ def load_default_profile() -> tuple[dict[str, Provider], RoutingProfile, Setting
         return load_for_profile(next(iter(profiles)))
     die(
         "multiple profiles available, specify one:\n"
-        f"  awerouter serve <name>\navailable: {', '.join(profiles)}"
+        f"  awerouter serve run <name>\navailable: {', '.join(profiles)}"
     )
 
 
@@ -743,15 +743,18 @@ class SuggestGroup(click.Group):
 
 class ProfileGroup(SuggestGroup):
     """Group where an unknown subcommand is treated as a profile name:
-    `awerouter cc-router-1` == `awerouter serve cc-router-1`.
+    `awerouter cc-router-1` == `awerouter serve run cc-router-1`.
 
     Defined commands always win, so profiles named after commands are
-    unreachable via the shorthand (use `serve <name>` for those). A token that
-    closely resembles a real command (e.g. `server` vs `serve`) is reported as
-    a typo instead of being taken as a profile name; a bare unknown token with
-    extra positional arguments can't be a profile launch either, so it gets
-    the -h pointer.
+    unreachable via the shorthand (use `serve run <name>` for those). A token
+    that closely resembles a real command (e.g. `server` vs `serve`) is
+    reported as a typo instead of being taken as a profile name; a bare
+    unknown token with extra positional arguments can't be a profile launch
+    either, so it gets the -h pointer.
     """
+
+    # Where a typo'd token should point users to launch a profile instead.
+    profile_hint = "awerouter serve run <profile> or awerouter <profile>"
 
     def resolve_command(self, ctx, args):
         try:
@@ -765,7 +768,7 @@ class ProfileGroup(SuggestGroup):
             if close:
                 ctx.fail(
                     f"unknown command '{cmd_name}' — did you mean '{close}'? "
-                    f"(to start a profile: awerouter serve <profile> or awerouter <profile>)"
+                    f"(to start a profile: {self.profile_hint})"
                 )
             if self._has_stray_positionals(args[1:]):
                 ctx.fail(

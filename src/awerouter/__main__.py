@@ -1,5 +1,5 @@
 """`python -m awerouter` == the `awerouter` console script (used by
-`serve --background` to spawn the daemon under the running interpreter)."""
+`serve run --background` to spawn the daemon under the running interpreter)."""
 
 from awerouter.cli import main
 

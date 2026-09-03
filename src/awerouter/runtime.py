@@ -1,9 +1,9 @@
 """Running-instance registry.
 
 Every serve process (foreground or background) registers itself under the
-state dir at bind time, so `awerouter status` and `awerouter stop` see all
-live instances. Files are keyed by pid; entries whose pid no longer exists
-(killed -9, lost terminal) are pruned on sight.
+state dir at bind time, so `awerouter serve status` and `awerouter serve stop`
+see all live instances. Files are keyed by pid; entries whose pid no longer
+exists (killed -9, lost terminal) are pruned on sight.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def run_dir() -> Path:
 
 
 def serve_log_path(profile: str) -> Path:
-    """Where `serve --background` redirects the daemon's output."""
+    """Where `serve run --background` redirects the daemon's output."""
     return state_dir() / f"serve-{profile}.log"
 
 

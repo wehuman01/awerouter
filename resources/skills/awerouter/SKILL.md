@@ -9,7 +9,7 @@ This skill covers **configuring** awerouter routing, inspecting profiles, and in
 
 ## Do Not Run Long-Lived Servers
 
-**Never start `awerouter serve` for the user inside this agent.** It blocks the session. Tell the user to run it in their own terminal.
+**Never start `awerouter serve run` for the user inside this agent.** It blocks the session. Tell the user to run it in their own terminal.
 
 ## Language Behavior
 
@@ -43,7 +43,7 @@ You may run these read-only or non-interactive commands:
 - `awerouter usage savings`
 
 Do not run these inside the agent:
-- `awerouter serve` (blocks the session)
+- `awerouter serve run` (blocks the session)
 - `awerouter add` (interactive wizard)
 - `awerouter login [claude]` (opens a browser and waits for a pasted code — the user runs it)
 - `awerouter logout [claude]` (deletes a stored credential)
@@ -191,7 +191,7 @@ Use `awerouter usage tokens` to show input-token totals by content type (message
 ## Pitfalls
 
 - Loopback proxy hijack: shell proxy env without `no_proxy=127.0.0.1,localhost` can cause empty `502` errors.
-- Long-lived sessions: never run `awerouter serve` inside the agent.
+- Long-lived sessions: never run `awerouter serve run` inside the agent.
 - OpenAI clients: they do not behave like Claude Code tier labels.
 - Auth mismatch: if upstream expects a different header, set `auth_header` explicitly.
 
@@ -200,7 +200,7 @@ Use `awerouter usage tokens` to show input-token totals by content type (message
 - Empty `502` right after launch -> likely shell proxy hijacking loopback.
 - Profile not found -> check `routing.json` profile id spelling and `AWEROUTER_CONFIG_DIR`.
 - Provider not found -> check protocol group name and provider spelling in `providers.json`.
-- Missing token env var -> set the shell variable before starting `awerouter serve`.
+- Missing token env var -> set the shell variable before starting `awerouter serve run`.
 - Serve-start warning "no auth set for off-machine providers" -> either a forgotten `auth` entry (cloud APIs need one) or a legitimate LAN no-auth server; the warning is informational, not fatal.
 - Requests 503 with "awerouter login claude" -> the stored subscription login is missing/invalid; the user runs `awerouter login claude` in their own terminal (browser + paste the code).
 - Config broken after an edit -> `config edit` and the `add` wizard write a `.bak` before every change; tell the user to run `awerouter restore [providers|routing]` in their own terminal.

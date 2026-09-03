@@ -1068,7 +1068,7 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
         runtime.register(profile.name, profile.protocol, actual_port, host, background)
     except OSError as exc:
         print(f"  warning -> cannot register this instance ({exc}); "
-              "awerouter status/stop won't see it")
+              "awerouter serve status/stop won't see it")
     watcher = asyncio.ensure_future(_watch_config(app, profile.name))
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
