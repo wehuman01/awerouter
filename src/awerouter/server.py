@@ -364,6 +364,13 @@ class _RoutingState:
         self.claude_force_refresh = False   # next upstream call forces a claude token refresh
         self.codex_stream_fix = False
 
+    @property
+    def log_profile(self) -> str:
+        """Usage-log attribution. A direct forward belongs to no routing
+        profile; logging the context profile (an arbitrary pick among those
+        serving the protocol) would misattribute it in `usage --profile`."""
+        return "direct" if self.direct_dest is not None else self.profile.name
+
 
 def _log_failure(state: _RoutingState, request_id: str, t0: float, status: int) -> None:
     """Log requests that never got an upstream response (502 path)."""
@@ -384,7 +391,7 @@ def _log_failure(state: _RoutingState, request_id: str, t0: float, status: int) 
         tokens=state.result.inspect.token_breakdown,
         file_search_tokens=state.result.inspect.file_search_tokens,
         rtk_saved=state.rtk_saved,
-        profile=state.profile.name,
+        profile=state.log_profile,
         protocol=state.protocol,
         agent=state.agent,
         codex_retried=state.codex_retried,
@@ -684,7 +691,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
                 tokens=state.result.inspect.token_breakdown,
                 file_search_tokens=state.result.inspect.file_search_tokens,
                 rtk_saved=state.rtk_saved,
-                profile=profile.name,
+                profile=state.log_profile,
                 protocol=state.protocol,
                 agent=state.agent,
                 codex_retried=state.codex_retried,
@@ -745,7 +752,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
             tokens=state.result.inspect.token_breakdown,
             file_search_tokens=state.result.inspect.file_search_tokens,
             rtk_saved=state.rtk_saved,
-            profile=profile.name,
+            profile=state.log_profile,
             protocol=state.protocol,
             agent=state.agent,
             codex_retried=state.codex_retried,

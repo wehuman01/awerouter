@@ -112,6 +112,16 @@ class TestServiceHelpers:
         assert "WantedBy=default.target" in unit
         assert f"StandardOutput=append:{tmp_path / 'serve.log'}" in unit
 
+    def test_build_unit_escapes_percent_in_env(self, tmp_path):
+        """systemd expands % specifiers in Environment= values (systemd.exec(5));
+        a percent-encoded proxy URL must reach the daemon verbatim."""
+        unit = service.build_unit(
+            "cc-1", "cc-1", ["/usr/bin/python", "-m", "awerouter"],
+            tmp_path / "serve.log",
+            {"https_proxy": "http://u:p%40ss@127.0.0.1:7890"},
+        )
+        assert 'Environment="https_proxy=http://u:p%%40ss@127.0.0.1:7890"' in unit
+
     def test_installed_services_reads_names_back(self, tmp_path, monkeypatch):
         d = _launchd(tmp_path, monkeypatch)
         d.mkdir(parents=True)

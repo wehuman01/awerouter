@@ -174,7 +174,10 @@ def build_unit(slug: str, name: str, cmd: list, log: Path, environment: dict) ->
         "ExecStart=" + " ".join(_systemd_quote(t) for t in cmd),
     ]
     for key in sorted(environment):
-        value = str(environment[key]).replace("\\", "\\\\").replace('"', '\\"')
+        # % specifiers expand in Environment= values too (systemd.exec(5)),
+        # so a percent-encoded proxy URL must double them — same as _systemd_quote.
+        value = (str(environment[key])
+                 .replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%"))
         lines.append(f'Environment="{key}={value}"')
     lines += [
         f"StandardOutput=append:{log}",

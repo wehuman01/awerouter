@@ -254,6 +254,29 @@ class TestGatewayDirectModels:
                 await up_server.close()
         run(t())
 
+    def test_direct_forward_logs_under_no_profile(self):
+        """A direct forward belongs to no routing profile — the usage log
+        attributes it to 'direct', not to the context profile that happens
+        to serve the protocol."""
+        async def t():
+            up_server = TestServer(_mock_upstream(["/v1/messages"]))
+            await up_server.start_server()
+            try:
+                async with TestClient(TestServer(self._app(up_server.port))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "stepfun/step-3.7-flash", "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        from awerouter.logging import tail
+        e = tail(1)[0]
+        assert e.profile == "direct"
+        assert e.destination == "direct"
+        assert e.provider == "stepfun"
+        assert e.model_out == "step-3.7-flash"
+
 
 class TestGatewayRouting:
     """The alias picks the profile; the tier maps onto that profile's own
