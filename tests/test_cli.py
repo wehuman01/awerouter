@@ -222,7 +222,7 @@ class TestList:
         r = CliRunner().invoke(cli, ["list"])
         assert r.exit_code == 0
         assert any(line.startswith("cc-1\tanthropic\t-\tstepfun/sf-flash\tanthropic/opus\tL3>auto")
-                   for l in r.output.splitlines())
+                   for line in r.output.splitlines())
 
 
 class TestResolvePort:
@@ -938,6 +938,7 @@ class TestCommandSuggestions:
 
 class TestLoginLogout:
     def test_login_claude_runs_pkce_flow(self, tmp_path, monkeypatch):
+        from awerouter import claude
         monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
         monkeypatch.setattr(claude, "begin_login",
                             lambda: ("https://platform.claude.com/oauth/authorize?x=1", "ver", "st"))
@@ -965,7 +966,6 @@ class TestLoginLogout:
         assert "invalid authorization code" in r.output
 
     def test_login_claude_replaces_only_on_confirm(self, tmp_path, monkeypatch):
-        from awerouter import claude
         monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
         (tmp_path / "claude-auth.json").write_text(json.dumps(
             {"access_token": "old", "refresh_token": "rt",
