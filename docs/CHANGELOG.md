@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.6
 
 Gateway mode: `awerouter serve all` turns all routing.json profiles into one local endpoint. A request model name selects the profile (`<profile>/auto|flash|pro`, e.g. `step-glm/auto`); `GET /v1/models` advertises every alias. The existing `serve run <profile>` model remains unchanged, so users can migrate one client at a time or run both forms concurrently.
 
@@ -9,6 +9,9 @@ Gateway mode: `awerouter serve all` turns all routing.json profiles into one loc
 - Top-level `routing.json` `defaultProfile`: optional gateway-only bare-name target for `auto` / `flash` / `pro`, keeping existing Claude Code tier environment variables compatible. It must name a configured profile; with multiple profiles and no default, bare names fail loudly and callers must use `<profile>/...`; a lone profile is its own natural default. It is not valid inside a profile and does not affect single-profile serve.
 - Gateway discovery and honest failures: `/v1/models` lists default bare tiers when routable plus every profile alias; `/` identifies gateway mode. Unknown profile, invalid tier, and endpoint/profile protocol mismatch each return a descriptive 400 naming the problem and available alternatives. `/v1/messages/count_tokens` follows the same alias selection and model rewrite as inference.
 - Gateway-specific test coverage (alias selection, forced/custom tiers, default behavior, all protocols, errors, token counting, config parsing/reload and hints) plus README/README_cn documentation.
+
+### Fixed
+- The gateway's registration name (`serve status` / `serve stop gateway` / `serve-gateway.log`) now comes from a single `GATEWAY_PROFILE_NAME` constant instead of scattered literals, so no real profile named `gateway` can collide with it inconsistently.
 
 ## v0.5.5
 
