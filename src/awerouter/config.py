@@ -212,11 +212,30 @@ def load_providers(path: Optional[Path] = None) -> dict[str, dict[str, Provider]
             if not base_url:
                 die(f"provider '{protocol}.{name}' missing base_url")
             auth_header = entry.get("auth_header") or detect_auth_header(base_url)
+            models = _parse_provider_models(protocol, name, entry.get("models"))
             group_providers[name] = Provider(
                 name=name, base_url=base_url, auth=auth, auth_header=auth_header,
+                models=models,
             )
         result[protocol] = group_providers
     return result
+
+
+def _parse_provider_models(protocol: str, name: str, raw) -> tuple:
+    """Parse a provider's optional 'models' list — the models it can directly
+    serve under gateway mode ('provider/<model>' names). Absent = empty tuple.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        die(f"provider '{protocol}.{name}' 'models' must be a list of model ids")
+    models = []
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            die(f"provider '{protocol}.{name}' 'models' entries must be non-empty "
+                f"model-id strings, got: {entry!r}")
+        models.append(entry.strip())
+    return tuple(models)
 
 
 def _parse_auto_threshold(raw, base: AutoThresholdConfig | None = None,

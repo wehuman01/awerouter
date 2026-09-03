@@ -79,14 +79,14 @@ def detect_filter(text: str):
         return git_status
 
     lines = head.split("\n")
-    non_empty = [l for l in lines if l.strip()]
+    non_empty = [line for line in lines if line.strip()]
 
     # Rust grep rule: any of the first 5 non-empty lines is "file:number:content"
-    if any(_is_grep_line(l) for l in non_empty[:5]):
+    if any(_is_grep_line(line) for line in non_empty[:5]):
         return grep
 
     # Rust find rule: ALL non-empty lines path-like (no ':'), >= 3 lines
-    if len(non_empty) >= 3 and all(_is_path_like(l) for l in non_empty):
+    if len(non_empty) >= 3 and all(_is_path_like(line) for line in non_empty):
         return find
 
     if _RE_TREE_GLYPH.search(head):
@@ -141,21 +141,21 @@ def _is_path_like(line: str) -> bool:
 
 
 def _is_mostly_porcelain(head: str) -> bool:
-    lines = [l for l in head.split("\n") if l.strip()]
+    lines = [line for line in head.split("\n") if line.strip()]
     if len(lines) < 3:
         return False
-    hits = sum(1 for l in lines if _RE_PORCELAIN.match(l))
+    hits = sum(1 for line in lines if _RE_PORCELAIN.match(line))
     return hits / len(lines) >= 0.6
 
 
 def _is_line_numbered(lines: list) -> bool:
     hits = 0
     non_empty = 0
-    for l in lines[:100]:
-        if not l:  # only fully empty lines are skipped, mirroring upstream
+    for line in lines[:100]:
+        if not line:  # only fully empty lines are skipped, mirroring upstream
             continue
         non_empty += 1
-        if READ_NUMBERED_LINE_RE.match(l):
+        if READ_NUMBERED_LINE_RE.match(line):
             hits += 1
     if non_empty < 5:
         return False

@@ -437,7 +437,7 @@ grep.filter_name = "grep"  # type: ignore[attr-defined]
 # ---------------------------------------------------------------------------
 
 def find(input: str) -> str:
-    lines = [l for l in input.split("\n") if l.strip()]
+    lines = [line for line in input.split("\n") if line.strip()]
     if not lines:
         return input
 

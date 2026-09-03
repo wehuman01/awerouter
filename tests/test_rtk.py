@@ -320,7 +320,7 @@ class TestFilters:
         out_lines = out.split("\n")
         assert "line0" in out_lines[0]
         assert out_lines[-1] == "line299"
-        assert any("+120 lines truncated" in l for l in out_lines)
+        assert any("+120 lines truncated" in line for line in out_lines)
 
     def test_smart_truncate_short_input_untouched(self):
         assert smart_truncate("a\nb\nc") == "a\nb\nc"

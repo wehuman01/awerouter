@@ -47,7 +47,7 @@ from awerouter.config import (
 from awerouter.logging import append, auto_threshold, ensure_log_dir
 from awerouter.protocols import ENDPOINT_PATHS, extract
 from awerouter.router import resolve
-from awerouter.types import RequestLog, ResolveResult
+from awerouter.types import Destination, RequestLog, ResolveResult, RoutingProfile, Settings
 from awerouter.update_check import cached_update_hint
 from awerouter.vision import (
     CAPTIONS,
@@ -342,14 +342,22 @@ class _RoutingState:
     """Mutable routing state shared across the retry loop."""
 
     def __init__(self, profile, settings, body: dict, agent: str = "", rtk_saved: int = 0,
-                 protocol: str = "", resolve_model: "str | None" = None):
+                 protocol: str = "", resolve_model: "str | None" = None,
+                 direct_dest: Destination | None = None):
         self.profile = profile
         self.body = body
         self.inbound_model = body.get("model") or ""
         self.agent = agent
         self.rtk_saved = rtk_saved
         self.protocol = protocol
-        self.result = _resolve_for_request(body, profile, settings, protocol, resolve_model)
+        self.direct_dest = direct_dest
+        if direct_dest is None:
+            self.result = _resolve_for_request(body, profile, settings, protocol, resolve_model)
+        else:
+            self.result = ResolveResult(
+                destination="direct", model=direct_dest.model, label="direct",
+                inspect=extract(protocol, body),
+            )
         self.attempt = 0
         self.streaming_started = False
         self.codex_retried = False          # 401 auth retry happened (codex re-read / claude refresh)
@@ -359,7 +367,7 @@ class _RoutingState:
 
 def _log_failure(state: _RoutingState, request_id: str, t0: float, status: int) -> None:
     """Log requests that never got an upstream response (502 path)."""
-    dest = state.profile.destinations[state.result.destination]
+    dest = state.direct_dest or state.profile.destinations[state.result.destination]
     ensure_log_dir()
     append(RequestLog(
         ts=_now_iso(),
@@ -407,6 +415,7 @@ class _GatewayEntry:
     profile: "RoutingProfile"
     settings: "Settings"
     providers: dict  # {protocol: {provider_name: Provider}} for served protocols
+    direct_dest: Destination | None = None  # explicit provider/model gateway request
 
 
 def _gateway_error(message: str) -> web.HTTPBadRequest:
@@ -436,33 +445,60 @@ def _gateway_select(app, model: "str | None", endpoint_protocol: str) -> tuple[_
     if model and "/" in model:
         name, _, tier = model.partition("/")
         entry = entries.get(name)
-        if entry is None:
-            avail = ", ".join(sorted(entries)) or "(none)"
-            raise _gateway_error(
-                f"unknown profile '{name}' in model '{model}'; available: {avail}. "
-                "Use '<profile>/auto|flash|pro', or GET /v1/models to list them."
+        if entry is not None:
+            if endpoint_protocol not in entry.profile.protocols:
+                serving = sorted(n for n, e in entries.items()
+                                 if endpoint_protocol in e.profile.protocols)
+                pick = f" Profiles serving it: {', '.join(serving)}." if serving else ""
+                raise _gateway_error(
+                    f"profile '{name}' speaks '{entry.profile.protocol}'; "
+                    f"this endpoint serves '{endpoint_protocol}'.{pick}"
+                )
+            s = entry.settings
+            if tier == "auto":
+                resolve_model = ""
+            elif tier in ("flash", s.background_model):
+                resolve_model = s.background_model
+            elif tier in ("pro", s.think_model):
+                resolve_model = s.think_model
+            else:
+                raise _gateway_error(
+                    f"model '{model}': tier must be 'auto', 'flash', 'pro', or one of this "
+                    f"profile's own labels ('{s.background_model}' / '{s.think_model}')"
+                )
+            return entry, resolve_model
+
+        # Explicit provider/model names are fixed forwards, not routing tiers.
+        provider = next((e.providers.get(endpoint_protocol, {}).get(name)
+                         for e in entries.values()
+                         if name in e.providers.get(endpoint_protocol, {})), None)
+        if provider is not None:
+            if tier not in provider.models:
+                declared = ", ".join(provider.models) or "(none)"
+                raise _gateway_error(
+                    f"model '{model}' is not declared by provider '{name}'; "
+                    f"declared models: {declared}"
+                )
+            context = next((e for e in entries.values()
+                            if endpoint_protocol in e.profile.protocols), None)
+            if context is None:
+                raise _gateway_error(
+                    f"no profile serves protocol '{endpoint_protocol}' for model '{model}'"
+                )
+            direct = _GatewayEntry(
+                profile=context.profile,
+                settings=context.settings,
+                providers=context.providers,
+                direct_dest=Destination(name, tier),
             )
-        if endpoint_protocol not in entry.profile.protocols:
-            serving = sorted(n for n, e in entries.items()
-                             if endpoint_protocol in e.profile.protocols)
-            pick = f" Profiles serving it: {', '.join(serving)}." if serving else ""
-            raise _gateway_error(
-                f"profile '{name}' speaks '{entry.profile.protocol}'; "
-                f"this endpoint serves '{endpoint_protocol}'.{pick}"
-            )
-        s = entry.settings
-        if tier == "auto":
-            resolve_model = ""
-        elif tier in ("flash", s.background_model):
-            resolve_model = s.background_model
-        elif tier in ("pro", s.think_model):
-            resolve_model = s.think_model
-        else:
-            raise _gateway_error(
-                f"model '{model}': tier must be 'auto', 'flash', 'pro', or one of this "
-                f"profile's own labels ('{s.background_model}' / '{s.think_model}')"
-            )
-        return entry, resolve_model
+            return direct, ""
+
+        avail = ", ".join(sorted(entries)) or "(none)"
+        raise _gateway_error(
+            f"unknown profile '{name}' or provider in model '{model}'; "
+            f"available profiles: {avail}. Use '<profile>/auto|flash|pro', or "
+            "a declared '<provider>/<model>'; GET /v1/models lists them."
+        )
     # Bare name (or none at all): the default profile's tiers, exactly as a
     # single-profile serve would treat them.
     default_name = _gateway_default_name(app)
@@ -518,7 +554,9 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
     # Image bridge before rtk/routing: history images become flash
     # transcriptions, so what rtk compresses and the router scores is
     # exactly what goes upstream.
-    if settings.image_bridge:
+    direct_dest = entry.direct_dest if gateway is not None else None
+
+    if settings.image_bridge and direct_dest is None:
         await _bridge_images(request_id, session, body, endpoint_protocol,
                              profile, providers, settings)
 
@@ -526,7 +564,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
     # usage log then reflect what is actually sent (and billed) upstream.
     # Runs once — retries and the flash→pro fallback reuse the same body.
     rtk_saved = 0
-    if _rtk_enabled(request, profile):
+    if _rtk_enabled(request, profile) and direct_dest is None:
         stats = rtk.compress_body(body, endpoint_protocol)
         line = rtk.format_log(stats)
         if line:
@@ -534,12 +572,13 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
         rtk_saved = stats.saved_tokens if stats else 0
 
     state = _RoutingState(profile, settings, body,
-                          _agent_from_ua(request.headers.get("User-Agent", "")),
-                          rtk_saved, endpoint_protocol, resolve_model)
+                           _agent_from_ua(request.headers.get("User-Agent", "")),
+                           rtk_saved, endpoint_protocol, resolve_model,
+                           direct_dest)
 
     while True:
         dest_key = state.result.destination
-        dest = state.profile.destinations[dest_key]
+        dest = state.direct_dest or state.profile.destinations[dest_key]
         state.attempt += 1
         state.codex_stream_fix = (
             providers[dest.provider_name].auth == AUTH_SENTINEL
@@ -560,7 +599,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
             )
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             # Network-level failure
-            if dest_key == "flash" and state.attempt == 1:
+            if not state.direct_dest and dest_key == "flash" and state.attempt == 1:
                 state.result = _fallback_result(state)
                 continue
             _log_failure(state, request_id, t0, 502)
@@ -573,7 +612,8 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
         status = up.status
         is_transient = status in (429, 408) or (status >= 500 and status < 600)
 
-        if is_transient and dest_key == "flash" and state.attempt == 1 and not state.streaming_started:
+        if (is_transient and not state.direct_dest and dest_key == "flash"
+                and state.attempt == 1 and not state.streaming_started):
             up.close()
             state.result = _fallback_result(state)
             continue
@@ -598,7 +638,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
         # login is loud instead of silently burning paid pro. Pro on the same
         # login can't help; the 401 surfaces as before.
         if (status == 401 and auth in (AUTH_SENTINEL, CLAUDE_SENTINEL)
-                and dest_key == "flash" and state.attempt == 1
+                and not state.direct_dest and dest_key == "flash" and state.attempt == 1
                 and providers[state.profile.destinations["pro"].provider_name].auth != auth):
             up.close()
             print(f"  {auth} 401 -> login rejected after retry; {request_id} falls back to pro")
@@ -748,6 +788,7 @@ async def handle_count_tokens(request: web.Request) -> web.Response:
         entry, resolve_model = _gateway_select(request.app, body.get("model"), "anthropic")
         profile, settings = entry.profile, entry.settings
         providers: dict = entry.providers["anthropic"]
+        direct_dest = entry.direct_dest
     else:
         profile = request.app["profile"]
         settings = request.app["settings"]
@@ -755,22 +796,25 @@ async def handle_count_tokens(request: web.Request) -> web.Response:
             raise _protocol_mismatch(request, "anthropic")
         providers = request.app["providers"]["anthropic"]
         resolve_model = None
+        direct_dest = None
 
     # Same compression as /v1/messages: the client's context-window estimate
     # must match what actually gets sent upstream.
-    if _rtk_enabled(request, profile):
+    if _rtk_enabled(request, profile) and direct_dest is None:
         rtk.compress_body(body, "anthropic")
 
     # Image bridge here too, for the same reason: the token estimate must
     # reflect the transcriptions that /v1/messages would actually send.
-    if settings.image_bridge:
+    if settings.image_bridge and direct_dest is None:
         rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
         await _bridge_images(rid, session, body, "anthropic",
                              profile, providers, settings)
 
     # Resolve destination (same logic as messages)
-    result = _resolve_for_request(body, profile, settings, "anthropic", resolve_model)
-    dest = profile.destinations[result.destination]
+    result = (ResolveResult("direct", direct_dest.model, "direct", extract("anthropic", body))
+              if direct_dest is not None
+              else _resolve_for_request(body, profile, settings, "anthropic", resolve_model))
+    dest = direct_dest or profile.destinations[result.destination]
     provider = providers[dest.provider_name]
 
     upstream_url = provider.base_url.rstrip("/") + request.path
@@ -806,6 +850,13 @@ async def handle_models(request: web.Request) -> web.Response:
             ids += [s.background_model, "auto", s.think_model]
         for name in sorted(gateway):
             ids += [f"{name}/auto", f"{name}/flash", f"{name}/pro"]
+        for entry in gateway.values():
+            for group in entry.providers.values():
+                for provider_name, provider in group.items():
+                    for model in provider.models:
+                        model_id = f"{provider_name}/{model}"
+                        if model_id not in ids:
+                            ids.append(model_id)
     models = [{"id": i, "object": "model"} for i in ids]
     return web.json_response({"data": models, "object": "list"})
 
@@ -904,13 +955,19 @@ def create_app(providers: dict, profile, settings) -> web.Application:
 
 
 def create_gateway_app(entries: dict[str, _GatewayEntry],
-                        default_profile: "str | None") -> web.Application:
+                       default_profile: "str | None",
+                       providers_all: dict | None = None) -> web.Application:
     """Gateway app: every profile on one port. The request's model name picks
     the profile ('<profile>/auto|flash|pro'); bare names go to default_profile
     (see _gateway_select). Routes are identical to the single-profile app."""
     app = web.Application()
     app["gateway"] = entries
     app["default_profile"] = default_profile
+    if providers_all:
+        for protocol, group in providers_all.items():
+            for entry in entries.values():
+                if protocol in entry.profile.protocols:
+                    entry.providers[protocol] = group
     app["version"] = __version__
 
     session = aiohttp.ClientSession()
@@ -1228,7 +1285,7 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
     if profile.port is not None:
         print(f"  port          -> {profile.port} (from routing.json; --port overrides)")
     if profile.rtk:
-        print(f"  rtk           -> on (tool-result compression)")
+        print("  rtk           -> on (tool-result compression)")
     if settings.image_bridge:
         bd = profile.destinations[settings.image_model]
         print(f"  image bridge  -> on ({bd.provider_name}/{bd.model} transcribes "
@@ -1388,7 +1445,7 @@ async def _serve_gateway(host: str, port: int, port_explicit: bool = False,
                 f"flash={flash.provider_name}/{flash.model}  "
                 f"pro={pro.provider_name}/{pro.model}")
         if e.profile.threshold_auto:
-            line += f"  L3>auto"
+            line += "  L3>auto"
         else:
             line += f"  L3>{e.profile.long_context_threshold:,}"
         if e.profile.rtk:

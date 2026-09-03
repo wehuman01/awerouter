@@ -165,6 +165,20 @@ Endpoints + keys, grouped by wire protocol (redacted in `config show`):
 }
 ```
 
+In gateway mode, a provider can also declare the models that may be selected directly:
+
+```json
+"openai-chat": {
+  "stepfun": {
+    "base_url": "https://api.stepfun.com/step_plan/v1",
+    "auth": "${STEPFUN_AUTH_TOKEN}",
+    "models": ["step-3.7-flash", "step-router-v1"]
+  }
+}
+```
+
+`awerouter serve all` then exposes `stepfun/step-3.7-flash` as a fixed forward. It bypasses automatic routing, and undeclared models are rejected. Declare `models` separately in each protocol group; existing configurations do not need changes.
+
 Three protocols are supported. `base_url` uses each native client's convention — copy it verbatim from your client config; awerouter appends the endpoint path the same way the native client would:
 
 | Protocol id         | `base_url` style | Endpoint |
@@ -436,7 +450,7 @@ Keys reference `${ENV_VAR}` syntax. Missing env vars die with a clear message at
 
 > **Profile-based routing:** `routing.json` groups configs under profile ids (like aweswitch). `awerouter serve run <profile>` starts one; with a single profile it auto-selects. `protocol` maps the profile to a providers.json group and decides which endpoint it serves — the serve banner prints the matching client env (`ANTHROPIC_BASE_URL` for Claude Code, `OPENAI_BASE_URL` / Codex `wire_api` for the openai protocols). It accepts a single id or a list: `"protocol": ["anthropic", "openai-chat"]` serves both wire protocols on one port — clients pick by endpoint path (`/v1/messages` vs `/v1/chat/completions`), each protocol forwards through its own provider group, and every destination provider must exist in each served group (per-protocol `base_url`s). Note: openai clients are single-model, so L2 tier labels effectively never fire for them — openai traffic routes by L1 + L3 with a flash default.
 
-> **Gateway mode (many profiles, one port):** `awerouter serve all` serves **every** routing.json profile on one port. Instead of configuring a separate OpenCode/SDK provider and port for each combination, the request's model name selects it: `<profile>/auto` runs the full L1–L4 smart route; `<profile>/flash` and `<profile>/pro` force a tier — for example `step-glm/auto` or `step-deepseek/pro`. `GET /v1/models` lists all names; endpoint path still selects the wire protocol among the ones a profile serves. An unknown profile, bad tier, or protocol mismatch returns a descriptive 400 rather than silently falling into another combination. Gateway mode has no profile-specific ports: it takes only its own `--port`, or scans from 20128.
+> **Gateway mode (many profiles, one port):** `awerouter serve all` serves **every** routing.json profile on one port. Instead of configuring a separate OpenCode/SDK provider and port for each combination, the request's model name selects it: `<profile>/auto` runs the full L1–L4 smart route; `<profile>/flash` and `<profile>/pro` force a tier — for example `step-glm/auto` or `step-deepseek/pro`. Providers may also expose declared `<provider>/<model>` fixed forwards, such as `stepfun/step-3.7-flash`; these bypass automatic routing. `GET /v1/models` lists all names; endpoint path still selects the wire protocol among the ones a profile serves. An unknown profile, bad tier, or protocol mismatch returns a descriptive 400 rather than silently falling into another combination. Gateway mode has no profile-specific ports: it takes only its own `--port`, or scans from 20128.
 >
 > ```json
 > {

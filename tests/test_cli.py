@@ -73,9 +73,9 @@ class TestSavings:
         assert "search: 0" in r.output
         assert "requests: 3  (flash 1 / pro 2, 33% flash, fallback 1)" in r.output
         lines = r.output.splitlines()
-        assert any(l.strip().startswith("flash") and "100" in l for l in lines)
-        assert any(l.strip().startswith("pro") and "50" in l for l in lines)
-        assert any(l.strip().startswith("total") and "150" in l for l in lines)
+        assert any(line.strip().startswith("flash") and "100" in line for line in lines)
+        assert any(line.strip().startswith("pro") and "50" in line for line in lines)
+        assert any(line.strip().startswith("total") and "150" in line for line in lines)
         assert "offloaded to flash 100  (67% of input tokens)" in r.output
         assert "150 → 50" in r.output
         assert "cache sensitivity" in r.output
@@ -202,8 +202,8 @@ class TestList:
         r = CliRunner().invoke(cli, ["list"])
         assert r.exit_code == 0
         lines = r.output.splitlines()
-        assert any(l.startswith("cc-1\tanthropic\t-\tstepfun/sf-flash\tanthropic/opus\tL3>8000") for l in lines)
-        assert any(l.startswith("cc-2\tanthropic\t-\tstepfun/sf-flash\tstepfun/sf-pro\tL3>4000") for l in lines)
+        assert any(line.startswith("cc-1\tanthropic\t-\tstepfun/sf-flash\tanthropic/opus\tL3>8000") for line in lines)
+        assert any(line.startswith("cc-2\tanthropic\t-\tstepfun/sf-flash\tstepfun/sf-pro\tL3>4000") for line in lines)
 
     def test_lists_profile_port(self, tmp_path, monkeypatch):
         routing = _routing()
@@ -212,8 +212,8 @@ class TestList:
         r = CliRunner().invoke(cli, ["list"])
         assert r.exit_code == 0
         lines = r.output.splitlines()
-        assert any(l.startswith("cc-1\tanthropic\t20129\t") for l in lines)
-        assert any(l.startswith("cc-2\tanthropic\t-\t") for l in lines)
+        assert any(line.startswith("cc-1\tanthropic\t20129\t") for line in lines)
+        assert any(line.startswith("cc-2\tanthropic\t-\t") for line in lines)
 
     def test_lists_auto_threshold(self, tmp_path, monkeypatch):
         routing = _routing()
@@ -221,7 +221,7 @@ class TestList:
         _setup(tmp_path, monkeypatch, _providers(), routing)
         r = CliRunner().invoke(cli, ["list"])
         assert r.exit_code == 0
-        assert any(l.startswith("cc-1\tanthropic\t-\tstepfun/sf-flash\tanthropic/opus\tL3>auto")
+        assert any(line.startswith("cc-1\tanthropic\t-\tstepfun/sf-flash\tanthropic/opus\tL3>auto")
                    for l in r.output.splitlines())
 
 
@@ -406,7 +406,7 @@ class TestUsage:
             append(_entry(i, "cc-1"))
         r = CliRunner().invoke(cli, ["usage", "log", "--profile", "cc-2"])
         assert r.exit_code == 0, r.output
-        lines = [l for l in r.output.splitlines() if "tokens=" in l]
+        lines = [line for line in r.output.splitlines() if "tokens=" in line]
         assert len(lines) == 3
 
     def test_stats_subcommand(self, tmp_path, monkeypatch):
@@ -938,7 +938,6 @@ class TestCommandSuggestions:
 
 class TestLoginLogout:
     def test_login_claude_runs_pkce_flow(self, tmp_path, monkeypatch):
-        from awerouter import claude
         monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
         monkeypatch.setattr(claude, "begin_login",
                             lambda: ("https://platform.claude.com/oauth/authorize?x=1", "ver", "st"))

@@ -166,6 +166,20 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
 }
 ```
 
+在网关模式下，provider 还可以声明允许直接切换的模型：
+
+```json
+"openai-chat": {
+  "stepfun": {
+    "base_url": "https://api.stepfun.com/step_plan/v1",
+    "auth": "${STEPFUN_AUTH_TOKEN}",
+    "models": ["step-3.7-flash", "step-router-v1"]
+  }
+}
+```
+
+这样 `awerouter serve all` 会额外暴露 `stepfun/step-3.7-flash`。它是固定转发，绕过自动路由；未声明的模型不会被接受。`models` 按协议分别声明，旧配置不需要修改。
+
 支持三种协议。`base_url` 沿用各原生客户端的写法——从客户端配置里原样抄过来即可，awerouter 按原生客户端同样的规则拼接端点路径：
 
 | 协议 id | `base_url` 写法 | 端点 |
@@ -437,7 +451,7 @@ settings 的每个键也都可以**直接写在 profile 体内**，与 `protocol
 
 > **基于 profile 的路由：** `routing.json` 用 profile id 分组（类似 aweswitch）。`awerouter serve run <profile>` 启动其中一个；只有一个 profile 时自动选择。`protocol` 字段把 profile 映射到 providers.json 的分组，并决定它服务哪个端点——serve 横幅按协议打印对应客户端的环境变量（anthropic → Claude Code 的 `ANTHROPIC_BASE_URL`；openai 协议 → `OPENAI_BASE_URL` / Codex `wire_api`）。它可以写单个 id，也可以写列表：`"protocol": ["anthropic", "openai-chat"]` 让一个端口同时服务两种线协议——客户端按端点路径自选（`/v1/messages` 还是 `/v1/chat/completions`），每种协议走自己的 provider 组，且每个 destination provider 必须在每个被服务分组里都存在（各自协议的 `base_url`）。注意：openai 客户端是单 model 配置，L2 档位匹配基本不触发——openai 流量走 L1 + L3，默认 flash。
 
-> **网关模式（多 profile，一个端口）：** `awerouter serve all` 在**一个**端口服务 routing.json 的全部 profile；不再给每个组合配不同的 OpenCode/SDK provider 和端口。请求的 model 名选择 profile：`<profile>/auto`（完整 L1–L4 智能路由）、`<profile>/flash` 或 `<profile>/pro`（强制档位），例如 `step-glm/auto`、`step-deepseek/pro`。`GET /v1/models` 会列出所有可选名；同一 profile 支持的每种协议依旧由请求端点决定。未知 profile、错误档位或协议不匹配会返回 400 并说明可用 profile，不会静默落到其他组合。网关模式没有 profile 专属端口：它只认 `--port`，否则从 20128 起找空闲端口。
+> **网关模式（多 profile，一个端口）：** `awerouter serve all` 在**一个**端口服务 routing.json 的全部 profile；不再给每个组合配不同的 OpenCode/SDK provider 和端口。请求的 model 名选择 profile：`<profile>/auto`（完整 L1–L4 智能路由）、`<profile>/flash` 或 `<profile>/pro`（强制档位），例如 `step-glm/auto`、`step-deepseek/pro`。也可以使用 providers.json 中声明的 `<provider>/<model>` 固定模型，例如 `stepfun/step-3.7-flash`；固定模型绕过自动路由。`GET /v1/models` 会列出所有可选名；同一 profile 支持的每种协议依旧由请求端点决定。未知 profile、错误档位或协议不匹配会返回 400 并说明可用 profile，不会静默落到其他组合。网关模式没有 profile 专属端口：它只认 `--port`，否则从 20128 起找空闲端口。
 >
 > ```json
 > {

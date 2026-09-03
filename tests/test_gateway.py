@@ -73,6 +73,19 @@ def _glm_deep(port=0):
     }
 
 
+def _direct_providers(port=0):
+    """Full providers map with declared 'models' on some providers (the second
+    arg create_gateway_app now takes: the direct-model registry)."""
+    def group():
+        return {
+            "stepfun": Provider("stepfun", f"http://127.0.0.1:{port}", "${STEPFUN_KEY}",
+                                models=("step-3.7-flash", "step-router-v1")),
+            "glm": Provider("glm", f"http://127.0.0.1:{port}", "${ANTHROPIC_KEY}",
+                            models=("glm-5.3",)),
+        }
+    return {p: group() for p in PROTOCOLS}
+
+
 def _mock_upstream(routes):
     """Start one mock upstream answering every path in routes with the JSON
     body's model echoed back. Returns the started TestServer."""
@@ -123,6 +136,122 @@ class TestGatewayModels:
                 assert d["mode"] == "gateway"
                 assert d["models"] == ["a"]
                 assert d["version"] == __version__
+        run(t())
+
+    def test_v1_models_lists_direct_providers(self):
+        """Declared provider/models ('provider/model') show up in /v1/models."""
+        entries = {"glm": _entry("glm", "anthropic", "f", "p")}
+        async def t():
+            async with TestClient(TestServer(create_gateway_app(entries, "glm",
+                                                                _direct_providers()))) as c:
+                ids = [m["id"] for m in (await (await c.get("/v1/models")).json())["data"]]
+                assert "stepfun/step-3.7-flash" in ids
+                assert "stepfun/step-router-v1" in ids
+                assert "glm/glm-5.3" in ids
+        run(t())
+
+
+class TestGatewayDirectModels:
+    """'provider/model' (a provider with declared 'models') forwards straight
+    to that provider+model, bypassing the routing pipeline and flash→pro
+    fallback. Existing '<profile>/tier' names keep their behavior."""
+
+    def _app(self, up_port, entries=None):
+        return create_gateway_app(entries or {"glm": _entry("glm", "anthropic", "f", "p")},
+                                  "glm", _direct_providers(up_port))
+
+    def test_direct_model_forwards_to_that_provider(self):
+        async def t():
+            up_server = TestServer(_mock_upstream(["/v1/messages"]))
+            await up_server.start_server()
+            try:
+                async with TestClient(TestServer(self._app(up_server.port))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "stepfun/step-3.7-flash",
+                        "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+                    assert (await r.json())["model"] == "step-3.7-flash"
+            finally:
+                await up_server.close()
+        run(t())
+
+    def test_direct_model_ignores_auto_routing(self):
+        """A long request to a direct model still hits that model, not pro."""
+        async def t():
+            up_server = TestServer(_mock_upstream(["/v1/messages"]))
+            await up_server.start_server()
+            try:
+                async with TestClient(TestServer(self._app(up_server.port))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "stepfun/step-3.7-flash",
+                        "messages": [{"content": "x" * 2000}],
+                    })
+                    assert r.status == 200
+                    assert (await r.json())["model"] == "step-3.7-flash"
+            finally:
+                await up_server.close()
+        run(t())
+
+    def test_direct_model_is_addressable_without_default_profile(self):
+        """Direct models resolve even with no defaultProfile set."""
+        entries = {
+            "glm": _entry("glm", "anthropic", "f", "p"),
+            "deep": _entry("deep", "anthropic", "f", "p"),
+        }
+        async def t():
+            up_server = TestServer(_mock_upstream(["/v1/messages"]))
+            await up_server.start_server()
+            try:
+                async with TestClient(TestServer(create_gateway_app(entries, None,
+                                                                    _direct_providers(up_server.port)))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "stepfun/step-3.7-flash", "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+                    assert (await r.json())["model"] == "step-3.7-flash"
+            finally:
+                await up_server.close()
+        run(t())
+
+    def test_unknown_provider_400_lists_profiles(self):
+        async def t():
+            async with TestClient(TestServer(self._app(0))) as c:
+                r = await c.post("/v1/messages", json={
+                    "model": "nope/x", "messages": [{"content": "hi"}],
+                })
+                assert r.status == 400
+                msg = (await r.json())["error"]["message"]
+                assert "unknown" in msg.lower()
+        run(t())
+
+    def test_undeclared_model_400(self):
+        async def t():
+            async with TestClient(TestServer(self._app(0))) as c:
+                r = await c.post("/v1/messages", json={
+                    "model": "stepfun/not-declared", "messages": [{"content": "hi"}],
+                })
+                assert r.status == 400
+                assert "step-3.7-flash" in (await r.json())["error"]["message"]
+        run(t())
+
+    def test_profile_alias_takes_precedence_over_provider_name(self):
+        """A name matching a profile routes as a profile, not a direct provider,
+        even if a provider shares the name."""
+        async def t():
+            up_server = TestServer(_mock_upstream(["/v1/messages"]))
+            await up_server.start_server()
+            try:
+                entries = {"stepfun": _entry("stepfun", "anthropic", "sf-flash", "sf-pro")}
+                async with TestClient(TestServer(create_gateway_app(entries, "stepfun",
+                                                                   _direct_providers(up_server.port)))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "stepfun/auto", "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+                    assert (await r.json())["model"] == "sf-flash"
+            finally:
+                await up_server.close()
         run(t())
 
 

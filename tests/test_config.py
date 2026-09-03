@@ -8,7 +8,6 @@ from awerouter.config import (
     _parse_destination,
     available_templates,
     detect_auth_header,
-    die,
     expand_value,
     format_providers_display,
     format_routing_display,
@@ -240,6 +239,35 @@ class TestLoadProviders:
             "claude": {"base_url": "https://api.anthropic.com/v1", "auth": "claude"},
         }}, {})
         with pytest.raises(SystemExit, match="anthropic"):
+            load_providers()
+
+    def test_models_list_parsed(self, tmp_path, monkeypatch):
+        """A provider may declare the models it can directly serve."""
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"anthropic": {
+            "stepfun": {"base_url": "https://x", "auth": "${K}",
+                        "models": ["step-3.7-flash", "step-router-v1"]},
+            "glm": {"base_url": "https://y", "auth": "${K}"},
+        }}, {})
+        result = load_providers()
+        step = result["anthropic"]["stepfun"]
+        assert step.models == ("step-3.7-flash", "step-router-v1")
+        assert result["anthropic"]["glm"].models == ()
+
+    def test_models_must_be_list_of_strings(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"anthropic": {
+            "p": {"base_url": "https://x", "auth": "${K}", "models": "step-3.7-flash"},
+        }}, {})
+        with pytest.raises(SystemExit, match="models"):
+            load_providers()
+
+    def test_models_empty_entry_dies(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"anthropic": {
+            "p": {"base_url": "https://x", "auth": "${K}", "models": [""]},
+        }}, {})
+        with pytest.raises(SystemExit, match="models"):
             load_providers()
 
 

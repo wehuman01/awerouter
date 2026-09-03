@@ -92,7 +92,7 @@ def _tail_lines(n: int) -> list:
     if buf:
         lines.append(buf)
     lines.reverse()
-    return [l.decode("utf-8", "replace") for l in lines[-n:]]
+    return [line.decode("utf-8", "replace") for line in lines[-n:]]
 
 
 def tail(n: int | None = 20) -> list[RequestLog]:

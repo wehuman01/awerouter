@@ -15,6 +15,9 @@ class Provider:
     # Auto-detected from base_url at load time (anthropic.com → x-api-key, else authorization).
     # Explicit override only when the heuristic is wrong.
     auth_header: str = "authorization"
+    # Models this provider can directly serve under gateway mode ('provider/<model>'
+    # names). Empty = provider only reachable through a routing profile's destination.
+    models: tuple[str, ...] = ()
 
 
 @dataclass
