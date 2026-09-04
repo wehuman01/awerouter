@@ -9,7 +9,7 @@ The project should stay focused on that job. Prefer changes that make routing cl
 Clone the repository and run the tests:
 
 ```bash
-git clone https://github.com/mugpeng/awerouter.git
+git clone https://github.com/wehuman01/awerouter.git
 cd awerouter
 python3 -m pip install -e ".[dev]"
 python3 -m pytest

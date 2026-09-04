@@ -20,32 +20,23 @@
     <img src="https://img.shields.io/badge/install-pip-22C55E?style=flat-square" alt="pip">
     <img src="https://img.shields.io/badge/platform-terminal-334155?style=flat-square" alt="Platform">
     <img src="https://img.shields.io/pypi/dm/awerouter?style=flat-square" alt="Downloads">
-    <img src="https://img.shields.io/github/stars/mugpeng/awerouter?style=flat-square" alt="Stars">
+    <img src="https://img.shields.io/github/stars/wehuman01/awerouter?style=flat-square" alt="Stars">
   </p>
 </div>
 
 > 按结构信号把编码 agent 流量拆分到不同 provider，省钱不降质。同协议透传，不做协议转换。可选的 profile 级 tool-result 压缩（RTK，默认关闭）。
 
-## 支持工具
+## 快速开始
 
-awerouter 与两个配套工具配合最佳：
-
-- **[aweskill](https://aweskill.webioinfo.top/)** — 面向 AI agent 的 CLI skill 包管理器。安装 awerouter skill，让你的 agent 用自然语言管理路由。
-- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Agent profile 切换器。用指向 awerouter daemon 的 profile 启动 Claude Code、Codex 或 OpenCode 会话。
-
-aweskill 通过管理skills，让 agent **管理**路由；aweswitch 让你**启动**走路由的会话。配置一次 awerouter，之后就能用 `aweswitch <profile>` 把任意 agent 启动到它上面。
-
-## 安装与使用
-
-### 让 AI agent 安装和配置
+### 1. 安装和使用 awerouter
 
 如果你在 Claude Code、Codex、Cursor 等 coding agent 中工作，直接告诉它：
 
 ```text
-Read https://github.com/mugpeng/awerouter/blob/main/README.ai.md and follow it to install and configure awerouter.
+Read https://github.com/wehuman01/awerouter/blob/main/README.ai.md and follow it to install and configure awerouter.
 ```
 
-Agent 会安装 CLI、初始化配置、帮你添加 profile，并通过 [aweskill](https://aweskill.webioinfo.top/) 安装 awerouter skill，用于后续路由管理。
+Agent 会安装 CLI、初始化配置（内置模板，或合并进你已有的配置）、配置 providers 和路由，并通过 [aweskill](https://aweskill.webioinfo.top/) 安装 awerouter skill 用于后续路由管理。认证方面，它会扫描你的 shell 配置，找出你已经导出的 key 变量（`GLM_API_KEY`、`STEPFUN_AUTH_TOKEN` 等），在 `providers.json` 里以 `${VAR}` 引用——只报告变量名、不碰值，只有缺失的 key 才会问你要。
 
 **配置完成后你可以这样告诉 agent：**
 
@@ -54,36 +45,66 @@ Agent 会安装 CLI、初始化配置、帮你添加 profile，并通过 [aweski
 > "根据 usage 帮我调一下 longContextThreshold。"
 > "解释一下我的 usage savings。"
 
-Agent 可以直接运行只读命令（`list`、`config show`、`usage stats`、`usage calibrate`、`usage savings`）并编辑配置，但**不会**运行 `awerouter serve run`（常驻 daemon）、`awerouter add`（交互式向导）、`awerouter config restore`（覆盖配置文件）、`awerouter usage clean`（删除日志）或 `awerouter self-update`（升级安装）。要启动 daemon，请在你自己的终端运行：
+Agent 可以直接运行只读命令（`list`、`config show`、`usage stats` / `calibrate` / `savings`）并编辑 `providers.json`（端点/密钥）和 `routing.json`（策略）——见[第 3 步](#3-用自然语言管理路由)。
+
+<details>
+<summary>手动安装与配置</summary>
+
+从 PyPI 安装：
 
 ```bash
-awerouter serve run cc-router-1
+pip install awerouter
 ```
 
-#### awerouter skill
-
-通过 [aweskill](https://aweskill.webioinfo.top/) 安装 [awerouter skill](https://github.com/mugpeng/awerouter/blob/main/resources/skills/awerouter/SKILL.md)，可以让 AI agent 用自然语言管理路由：
-
-- 列出、查看、添加、编辑路由 profile
-- 分别编辑 `providers.json`（端点/密钥）和 `routing.json`（策略）
-- 读取 `usage stats` / `usage calibrate` / `usage savings` 并给出阈值调整建议
-- 引导配置 `${ENV_VAR}` 引用所需的环境变量
-
-安装后你可以直接告诉 agent："给 openai-chat 分组加一个 GLM provider"、"把 longContextThreshold 调到 12000"、"看看我的 web_search 流量走哪个 provider"，agent 会读取配置、做修改、用 `awerouter config show` / `awerouter list` 验证。
-
-#### 通过 aweswitch 启动
-
-awerouter 配置好后，用一个指向 daemon 的 aweswitch profile，就能启动走智能路由的编码 agent。
-
-**示例：通过 awerouter 启动 OpenCode**
-
-先在一个终端用 openai-chat profile 启动 daemon：
+快速开始：
 
 ```bash
-awerouter serve run oc-router-1
+# 1. 初始化配置（生成 ~/.config/awerouter/{providers,routing}.json）
+awerouter init                # 也可选内置搭配：awerouter init step-glm / glm-codex / step-glm-mm（见「常见搭配模版」）
+#    已经有配置了？awerouter init <模板> --merge 把模板里缺的 provider、profile 和 settings
+#    补进现有配置——已有条目一律不覆盖
+
+# 2. 添加 profile（自动写入两个文件，保证引用一致）
+awerouter add                 # 交互式向导——在你自己的终端运行
+#    或者手改：编辑 providers.json 填密钥（${ENV_VAR}），编辑 routing.json 映射 flash/pro
+
+# 3. 安装 awerouter skill，用于后续自然语言管理
+aweskill install wehuman01/awerouter
+aweskill agent add skill awerouter --global --agent <agent-id>   # claude-code、codex、cursor 等
 ```
 
-然后在 aweswitch 配置里加一个指向它的 OpenCode profile：
+</details>
+
+### 2. 在自己的终端启动路由，并接入客户端
+
+`awerouter serve run` 是常驻 daemon——这是唯一一件 agent 不会替你做的事。在你自己的终端运行：
+
+```bash
+awerouter serve run cc-router-1   # 只有一个 profile 时名字可省
+#    加 -d 后台常驻运行（终端关掉也不停；日志：~/.local/state/awerouter/serve-<profile>.log）
+#    或 --install 装成常驻系统服务：开机自启，重启、崩溃都自动恢复
+```
+
+serve 启动横幅会直接打印客户端要 export 的行：
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:20128      # Claude Code
+export OPENAI_BASE_URL=http://127.0.0.1:20128/v1      # openai 兼容客户端
+# aweswitch profile 环境变量：ANTHROPIC_MODEL=auto, _HAIKU_=flash, _OPUS_=pro
+```
+
+改配置不用重启：serve 会监听 `routing.json` / `providers.json` 的修改并热加载（文件写坏时继续用上一份可用配置服务，见[后台运行与热加载](#后台运行与热加载)）。
+
+**或者通过 [aweswitch](https://github.com/Webioinfo01/aweswitch) 启动**——用一个 aweswitch profile 把客户端的 `BASE_URL` 指向 daemon，启动即走路由。在你的终端运行（它会启动新的 agent 会话）：
+
+```bash
+aweswitch oc-awerouter
+```
+
+<details>
+<summary>示例：指向 awerouter 的 OpenCode profile</summary>
+
+在 aweswitch 配置里加一个指向 daemon 的 OpenCode profile：
 
 ```json
 {
@@ -102,46 +123,88 @@ awerouter serve run oc-router-1
 }
 ```
 
-```bash
-aweswitch oc-awerouter
-```
-
 `OPENCODE_MODEL` 设为 `auto` 时，awerouter 按结构信号逐请求路由——上游 provider 收到的是 `routing.json` destinations 里配置的实际 model id，而不是 `auto`。Claude Code 同理，用一个 `anthropic` profile（`ANTHROPIC_MODEL=auto`）即可。
 
-### 手动安装和使用
+</details>
 
-从 PyPI 安装：
+Agent 的其余边界：它也不会运行 `awerouter add`（交互式向导）、`awerouter config restore`（覆盖配置文件）、`awerouter usage clean`（删除日志）或 `awerouter self-update`（升级安装）——这些都留在你的终端。
 
-```bash
-pip install awerouter
+### 3. 用自然语言管理路由
+
+日常路由管理都通过 agent 进行——列出和查看 profile、分别编辑 `providers.json`（端点/密钥）和 `routing.json`（策略）、读取 usage 并给出阈值建议（完整 CLI 参考见[命令](#命令)）：
+
+#### 查看与检查
+
+可以直接对 agent 说：
+
+```text
+列出我的 awerouter profile，并给我看 cc-router-1 的路由条目。
 ```
 
-快速开始：
+<details>
+<summary>等价的 CLI 命令</summary>
 
 ```bash
-# 1. 初始化配置（生成 ~/.config/awerouter/{providers,routing}.json）
-awerouter init                # 也可选内置搭配：awerouter init step-glm / glm-codex / step-glm-mm（见「常见搭配模版」）
-
-# 2. 交互式添加 profile（自动写入两个文件，保证引用一致）
-awerouter add
-#    或者手改：编辑 providers.json 填密钥（${ENV_VAR}），编辑 routing.json 映射 flash/pro
-
-# 3. 启动 daemon（只有一个 profile 时名字可省）
-awerouter serve run [cc-router-1]  # 等价简写：awerouter cc-router-1 | awerouter serve cc-router-1
-#    加 -d 后台常驻运行：awerouter serve run cc-router-1 -d
-#    （终端关掉也不停；日志：~/.local/state/awerouter/serve-<profile>.log）
-#    或 --install 装成常驻系统服务，开机自启（重启、崩溃都自动恢复）：
-#    awerouter serve run cc-router-1 --install
-#    （终端关掉也不停；日志：~/.local/state/awerouter/serve-<profile>.log）
-
-# 4. 让 CC 指向它 —— serve 启动横幅会直接打印下面这两行
-export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
-# aweswitch profile 环境变量：ANTHROPIC_MODEL=auto, _HAIKU_=flash, _OPUS_=pro
+awerouter list
+awerouter config show cc-router-1   # 脱敏输出；只看该 profile 的 providers 和路由条目
 ```
 
-改配置不用重启：serve 会监听 `routing.json` / `providers.json` 的修改并热加载（文件写坏时继续用上一份可用配置服务，见[后台运行与热加载](#后台运行与热加载)）。
+</details>
 
-内置模板源码位于 [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/)；`awerouter init <template>` 会将对应文件生成到你的配置目录。已经有配置了？`awerouter init <template> --merge` 把模板里缺的 provider、profile 和 settings 补进现有配置——已有条目一律不覆盖，profile 重名则跳过，新写入的 `imageModel`/`defaultModel`/`imageBridge` 会打印警告（它们会改变所有 profile 的路由行为）。
+#### 新增 provider 或调整目的地
+
+可以直接对 agent 说：
+
+```text
+给 openai-chat 分组加一个 GLM provider，并把它设为 pro 目的地。
+```
+
+Agent 会直接编辑两个配置文件——在 `providers.json` 的 `openai-chat` 分组加 provider 条目（如果你已导出 `GLM_API_KEY`，auth 就写成 `${GLM_API_KEY}`），并把 `routing.json` 里该 profile 的 `destinations.pro` 指向它。交互式的 `awerouter add` 向导仍然可以在你自己的终端使用。
+
+#### 按真实用量调阈值
+
+可以直接对 agent 说：
+
+```text
+根据 usage 帮我调一下 longContextThreshold。
+```
+
+<details>
+<summary>等价的 CLI 命令</summary>
+
+```bash
+awerouter usage calibrate    # L3 token 分布 + p90/p95/p99 候选阈值
+awerouter usage stats        # 按 profile 的明细、错误、延迟分位
+# 然后编辑 routing.json——或把阈值设为 "auto"，让每次 serve 启动时自动校准
+```
+
+</details>
+
+#### 看看省了多少
+
+可以直接对 agent 说：
+
+```text
+解释一下我的 usage savings。
+```
+
+<details>
+<summary>等价的 CLI 命令</summary>
+
+```bash
+awerouter usage savings      # 被卸载到 flash 的 pro token 量（对比纯 pro 基线），附可直接代入价格的公式
+```
+
+</details>
+
+## 支持工具
+
+awerouter 与两个配套工具配合最佳：
+
+- **[aweskill](https://aweskill.webioinfo.top/)** — 面向 AI agent 的 CLI skill 包管理器。安装 awerouter skill，让你的 agent 用自然语言管理路由。
+- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Agent profile 切换器。用指向 awerouter daemon 的 profile 启动 Claude Code、Codex 或 OpenCode 会话。
+
+aweskill 通过管理skills，让 agent **管理**路由；aweswitch 让你**启动**走路由的会话。配置一次 awerouter，之后就能用 `aweswitch <profile>` 把任意 agent 启动到它上面。
 
 ## 配置
 
@@ -582,7 +645,7 @@ export no_proxy=127.0.0.1,localhost NO_PROXY=127.0.0.1,localhost
 ## 开发
 
 ```bash
-git clone https://github.com/mugpeng/awerouter
+git clone https://github.com/wehuman01/awerouter
 cd awerouter
 pip install -e ".[dev]"
 pytest
@@ -612,7 +675,7 @@ awerouter 是一个不断壮大的 "awesome" 工具家族中的一员 — 围绕
 
 - **[aweskill](https://aweskill.webioinfo.top/)** — CLI 优先的技能包管理器，支持 47+ AI 编程 agent。
 - **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Claude Code、Codex、OpenCode 的 agent 配置切换器。
-- **[awerouter](https://github.com/mugpeng/awerouter)** — 智能路由器，用结构信号把请求分给 Flash 或 Pro 模型，减少不必要的模型开销。
+- **[awerouter](https://github.com/wehuman01/awerouter)** — 智能路由器，用结构信号把请求分给 Flash 或 Pro 模型，减少不必要的模型开销。
 - **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — 收藏、分类、恢复 AI 编程会话，还能搭配 aweswitch 实现保存配置，一键启动。
 - **[aweshare](https://github.com/wehuman01/aweshare)** — 通过自建 Hub 共享本地 Ollama/vLLM，或国产厂商 coding plan，或已授权的 OpenAI/Anthropic 帐号订阅，实现 token 的共享经济。
 - **[awewarm](https://github.com/wehuman01/awewarm)** — 订阅窗口保持器，让 AI 编程套餐的窗口持续激活，无论是本地设置，还是通过远程连接的服务器。

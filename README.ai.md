@@ -75,7 +75,7 @@ aweskill store init
 ##### A3. Install awerouter skill from GitHub
 
 ```bash
-aweskill install mugpeng/awerouter
+aweskill install wehuman01/awerouter
 ```
 
 ##### A4. Identify the current agent
@@ -134,7 +134,7 @@ If the agent is not in this list, ask the user where to place the skill file.
 
 ```bash
 mkdir -p <skill-directory>
-curl -fsSL https://raw.githubusercontent.com/mugpeng/awerouter/main/resources/skills/awerouter/SKILL.md -o <skill-directory>/SKILL.md
+curl -fsSL https://raw.githubusercontent.com/wehuman01/awerouter/main/resources/skills/awerouter/SKILL.md -o <skill-directory>/SKILL.md
 ```
 
 Replace `<skill-directory>` with the path from step B1.
@@ -169,6 +169,8 @@ Tell the user the difference between the two files:
 
 ### Edit providers
 
+Before writing anything, scan the shell config for API-key variables the user already exports (see "Discover existing keys first" in Step 5) and reuse them — reference existing variables with `${VAR_NAME}` instead of asking the user to set anything new.
+
 1. Read `providers.json`.
 2. Update only the protocol group you need: `anthropic`, `openai-chat`, or `openai-responses`.
 3. Use `${ENV_VAR}` for auth values. Local model servers (Ollama, LM Studio, llama.cpp, vLLM) need no auth — omit the `auth` key entirely, e.g. `{ "base_url": "http://127.0.0.1:11434/v1" }` under `openai-chat`. A Codex subscription account needs no key either: `"auth": "codex"` under `openai-responses` (base_url `https://chatgpt.com/backend-api/codex`) rides the local Codex CLI login (`~/.codex/auth.json`).
@@ -189,6 +191,18 @@ If the user is unsure, recommend starting from `awerouter init` and changing one
 ## Step 5: Set up environment variables
 
 Provider auth uses `${ENV_VAR}` references that expand from the shell environment. These must be set before starting `awerouter serve run`. Providers without an `auth` key (local model servers) need no environment variable.
+
+### Discover existing keys first
+
+Before asking the user to set anything, scan for API-key variables they already have:
+
+- Shell config files: `~/.zshrc`, `~/.bashrc`, `~/.bash_profile` — look for `export <NAME>=...` where NAME matches `*_API_KEY`, `*_AUTH_TOKEN`, `*_KEY`, or `*_TOKEN` (e.g. `GLM_API_KEY`, `STEPFUN_AUTH_TOKEN`, `OPENAI_API_KEY`, `ANTHROPIC_KEY`).
+- Windows: the user environment (`[Environment]::GetEnvironmentVariable("NAME", "User")`).
+- This agent's own process environment.
+
+Reference discovered variables directly in `providers.json` (e.g. `"auth": "${GLM_API_KEY}"`) so nothing new needs to be set. Report variable names only — never values. Only ask the user for keys that are missing, and persist those with the platform method below.
+
+Local model servers (no `auth` key) and subscription sentinels (`"auth": "codex"` / `"auth": "claude"`) never read environment variables — discovery does not apply to them.
 
 ### Where to put them
 
@@ -299,6 +313,7 @@ https://github.com/Webioinfo01/aweswitch/blob/main/README.ai.md
 
 - Do not run `awerouter serve run` inside the agent.
 - Do not hardcode secrets into config files.
+- When scanning shell configs or the environment for keys, report variable names only — never print key values.
 - Do not edit `providers.json` and `routing.json` in the same step unless the user explicitly asks.
 - If a command fails, report the exact command and error message.
 - If the user uses a non-default config directory, always use `AWEROUTER_CONFIG_DIR`.

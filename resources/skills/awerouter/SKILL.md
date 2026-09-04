@@ -158,7 +158,7 @@ awerouter list
 1. Read the config.
 2. Update `routing.json` only for strategy changes.
 3. Update `providers.json` only for endpoint/auth changes.
-4. Keep `${ENV_VAR}` for secrets; omit `auth` entirely for local no-auth providers.
+4. For auth values, scan the shell config first for API-key variables the user already exports (`~/.zshrc`, `~/.bashrc`, `~/.bash_profile`: `export <NAME>=...` matching `*_API_KEY` / `*_AUTH_TOKEN` / `*_KEY` / `*_TOKEN`; on Windows, the user environment) and reuse them as `${VAR_NAME}` — report variable names only, never values, and only ask for keys that are missing. Omit `auth` entirely for local no-auth providers.
 5. Validate with:
 ```bash
 awerouter config show

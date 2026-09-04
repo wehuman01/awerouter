@@ -20,32 +20,23 @@
     <img src="https://img.shields.io/badge/install-pip-22C55E?style=flat-square" alt="pip">
     <img src="https://img.shields.io/badge/platform-terminal-334155?style=flat-square" alt="Platform">
     <img src="https://img.shields.io/pypi/dm/awerouter?style=flat-square" alt="Downloads">
-    <img src="https://img.shields.io/github/stars/mugpeng/awerouter?style=flat-square" alt="Stars">
+    <img src="https://img.shields.io/github/stars/wehuman01/awerouter?style=flat-square" alt="Stars">
   </p>
 </div>
 
 > Transparent proxy that splits coding-agent traffic across providers by cost and capability. Same-protocol passthrough — no translation. Optional per-profile tool-result compression (RTK, off by default).
 
-## Support Tools
+## Quick Start
 
-awerouter works best alongside two companion tools:
-
-- **[aweskill](https://aweskill.webioinfo.top/)** — CLI skill package manager for AI agents. Installs the awerouter skill so your agent can manage routing in natural language.
-- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Agent profile switcher. Launches Claude Code, Codex, or OpenCode sessions with a profile that points `BASE_URL` at the awerouter daemon.
-
-aweskill lets the agent **manage** routing by operating skills; aweswitch lets you **launch** sessions through it. Configure awerouter once, then start any agent against it with `aweswitch <profile>`.
-
-## Install & Usage
-
-### Let AI agent install and configure
+### 1. Install and use awerouter
 
 If you are working in Claude Code, Codex, Cursor, or another coding agent, tell it:
 
 ```text
-Read https://github.com/mugpeng/awerouter/blob/main/README.ai.md and follow it to install and configure awerouter.
+Read https://github.com/wehuman01/awerouter/blob/main/README.ai.md and follow it to install and configure awerouter.
 ```
 
-The agent will install the CLI, init config, help you add profiles, and install the awerouter skill via [aweskill](https://aweskill.webioinfo.top/) for ongoing routing management.
+The agent will install the CLI, init the config (a bundled template, or merged into what you already have), configure providers and routing, and install the awerouter skill via [aweskill](https://aweskill.webioinfo.top/) for ongoing routing management. For auth it scans your shell config for API-key variables you already export (`GLM_API_KEY`, `STEPFUN_AUTH_TOKEN`, ...) and references them as `${VAR}` in `providers.json` — it reports variable names only, never values, and only asks for keys you don't already have.
 
 **After setup, you can tell the agent things like:**
 
@@ -54,36 +45,66 @@ The agent will install the CLI, init config, help you add profiles, and install 
 > "Tune longContextThreshold from my usage."
 > "Explain my usage savings."
 
-The agent can run read-only commands (`list`, `config show`, `usage stats`, `usage calibrate`, `usage savings`) and edit config directly, but it will **not** run `awerouter serve run` (long-lived daemon), `awerouter add` (interactive wizard), `awerouter config restore` (overwrites config), `awerouter usage clean` (deletes logs), or `awerouter self-update` (upgrades the installation). To start the daemon, run it in your own terminal:
+The agent can run read-only commands (`list`, `config show`, `usage stats` / `calibrate` / `savings`) and edit `providers.json` (endpoints/auth) and `routing.json` (strategy) directly — see [step 3](#3-manage-routing-through-natural-language).
+
+<details>
+<summary>Manual install and config</summary>
+
+Install from PyPI:
 
 ```bash
-awerouter serve run cc-router-1
+pip install awerouter
 ```
 
-#### awerouter skill
-
-Install the [awerouter skill](https://github.com/mugpeng/awerouter/blob/main/resources/skills/awerouter/SKILL.md) via [aweskill](https://aweskill.webioinfo.top/) to let AI agents manage routing with natural language:
-
-- List, inspect, add, and edit routing profiles
-- Edit `providers.json` (endpoints/auth) and `routing.json` (strategy) separately
-- Read `usage stats` / `usage calibrate` / `usage savings` and suggest threshold changes
-- Guide environment-variable setup for `${ENV_VAR}` auth references
-
-After install, you can tell the agent things like "Add a GLM provider for the openai-chat group", "Raise longContextThreshold to 12000", or "Show me which provider handles my web_search traffic". The agent reads the config, makes changes, and verifies with `awerouter config show` / `awerouter list`.
-
-#### Launch through aweswitch
-
-Once awerouter is configured, launch any agent through it by pointing an aweswitch profile at the daemon.
-
-**Example: launch OpenCode through awerouter**
-
-Start the daemon with an openai-chat profile in one terminal:
+Quick Start:
 
 ```bash
-awerouter serve run oc-router-1
+# 1. Init config (creates ~/.config/awerouter/{providers,routing}.json)
+awerouter init                # or pick a bundled combo: awerouter init step-glm / glm-codex / step-glm-mm (see "Common setup templates")
+#    already have a config? awerouter init <template> --merge fills in the template's
+#    missing providers, profiles, and settings — existing entries are never overwritten
+
+# 2. Add a profile (writes both files, references stay consistent)
+awerouter add                 # interactive wizard — run it in your own terminal
+#    or edit by hand: providers.json for keys (${ENV_VAR}), routing.json for flash/pro
+
+# 3. Install the awerouter skill for ongoing natural-language management
+aweskill install wehuman01/awerouter
+aweskill agent add skill awerouter --global --agent <agent-id>   # claude-code, codex, cursor, ...
 ```
 
-Add an aweswitch OpenCode profile pointing at it:
+</details>
+
+### 2. Start the router in your terminal and point a client at it
+
+`awerouter serve run` is a long-lived daemon — the one thing the agent will not run for you. Start it in your own terminal:
+
+```bash
+awerouter serve run cc-router-1   # profile name optional when only one exists
+#    -d runs it in the background (survives the terminal; log: ~/.local/state/awerouter/serve-<profile>.log)
+#    --install runs it as a resident service: starts at login, survives reboots and crashes
+```
+
+The serve banner prints the client line to export:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:20128      # Claude Code
+export OPENAI_BASE_URL=http://127.0.0.1:20128/v1      # openai-compatible clients
+# aweswitch profile env: ANTHROPIC_MODEL=auto, _HAIKU_=flash, _OPUS_=pro
+```
+
+Config edits don't need a restart: serve watches `routing.json` / `providers.json` and hot-reloads changes (a broken file keeps the previous config serving until it parses again — see [Background serving & hot reload](#background-serving--hot-reload)).
+
+**Or launch through [aweswitch](https://github.com/Webioinfo01/aweswitch)** — an aweswitch profile points a client's `BASE_URL` at the daemon, so routing is applied on launch. Run it in your terminal — it starts a new agent session:
+
+```bash
+aweswitch oc-awerouter
+```
+
+<details>
+<summary>Example: an OpenCode profile pointing at awerouter</summary>
+
+Add an aweswitch OpenCode profile pointing at the daemon:
 
 ```json
 {
@@ -102,45 +123,88 @@ Add an aweswitch OpenCode profile pointing at it:
 }
 ```
 
-```bash
-aweswitch oc-awerouter
-```
-
 With `OPENCODE_MODEL` set to `auto`, awerouter routes each request by structural signals — the upstream provider receives the actual model id from `routing.json` destinations, not `auto`. Claude Code works the same way via an `anthropic` profile (`ANTHROPIC_MODEL=auto`).
 
-### Manual install and usage
+</details>
 
-Install from PyPI:
+The agent's remaining boundaries: it also won't run `awerouter add` (interactive wizard), `awerouter config restore` (overwrites config), `awerouter usage clean` (deletes logs), or `awerouter self-update` (upgrades the installation) — those stay in your terminal.
 
-```bash
-pip install awerouter
+### 3. Manage routing through natural language
+
+Day-to-day routing management goes through your agent — it lists and inspects profiles, edits `providers.json` (endpoints/auth) and `routing.json` (strategy) separately, reads usage, and suggests threshold changes (the full CLI reference is in [Commands](#commands)):
+
+#### List and inspect
+
+You can tell your agent:
+
+```text
+List my awerouter profiles and show the routing entry for cc-router-1.
 ```
 
-Quick Start:
+<details>
+<summary>Equivalent CLI commands</summary>
 
 ```bash
-# 1. Init config (creates ~/.config/awerouter/{providers,routing}.json)
-awerouter init                # or pick a bundled combo: awerouter init step-glm / glm-codex / step-glm-mm (see "Common setup templates")
-
-# 2. Interactively add a profile (writes both files, references stay consistent)
-awerouter add
-#    or edit by hand: providers.json for keys (${ENV_VAR}), routing.json for flash/pro
-
-# 3. Start the daemon (profile name optional when only one exists)
-awerouter serve run [cc-router-1]  # shorthands: awerouter cc-router-1 | awerouter serve cc-router-1
-#    add -d to run it in the background: awerouter serve run cc-router-1 -d
-#    (survives the terminal; log: ~/.local/state/awerouter/serve-<profile>.log)
-#    or --install to run it as a resident service that also starts at login
-#    (survives reboots and crashes): awerouter serve run cc-router-1 --install
-
-# 4. Point CC at it — the serve banner prints both lines below
-export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
-# aweswitch profile env: ANTHROPIC_MODEL=auto, _HAIKU_=flash, _OPUS_=pro
+awerouter list
+awerouter config show cc-router-1   # redacted; the profile's providers + routing entry only
 ```
 
-Config edits don't need a restart: serve watches `routing.json` / `providers.json` and hot-reloads changes (a broken file keeps the previous config serving until it parses again — see [Background serving & hot reload](#background-serving--hot-reload)).
+</details>
 
-The bundled template source is [`src/awerouter/resources/templates/`](src/awerouter/resources/templates/); `awerouter init <template>` generates its matching files in your configuration directory. Already have a config? `awerouter init <template> --merge` adds the template's missing providers, profiles, and settings to it — existing entries are never overwritten, profile id collisions are skipped, and newly-set `imageModel`/`defaultModel`/`imageBridge` print a warning since they re-route every profile.
+#### Add a provider or edit destinations
+
+You can tell your agent:
+
+```text
+Add a GLM provider for the openai-chat group and use it as the pro destination.
+```
+
+The agent edits the two config files directly — a provider entry in the `openai-chat` group of `providers.json` (auth as `${GLM_API_KEY}` if you already export it), and the profile's `destinations.pro` in `routing.json` pointing at it. The interactive `awerouter add` wizard remains available in your own terminal.
+
+#### Tune the threshold from real usage
+
+You can tell your agent:
+
+```text
+Tune longContextThreshold from my usage.
+```
+
+<details>
+<summary>Equivalent CLI commands</summary>
+
+```bash
+awerouter usage calibrate    # L3 token distribution + suggested thresholds at p90/p95/p99
+awerouter usage stats        # per-profile breakdowns, errors, latency percentiles
+# then edit routing.json — or set the threshold to "auto" and let each serve start calibrate it
+```
+
+</details>
+
+#### See what routing saved
+
+You can tell your agent:
+
+```text
+Explain my usage savings.
+```
+
+<details>
+<summary>Equivalent CLI commands</summary>
+
+```bash
+awerouter usage savings      # pro tokens offloaded to flash vs a pro-only baseline, with ready-to-fill price formulas
+```
+
+</details>
+
+## Support Tools
+
+awerouter works best alongside two companion tools:
+
+- **[aweskill](https://aweskill.webioinfo.top/)** — CLI skill package manager for AI agents. Installs the awerouter skill so your agent can manage routing in natural language.
+- **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Agent profile switcher. Launches Claude Code, Codex, or OpenCode sessions with a profile that points `BASE_URL` at the awerouter daemon.
+
+aweskill lets the agent **manage** routing by operating skills; aweswitch lets you **launch** sessions through it. Configure awerouter once, then start any agent against it with `aweswitch <profile>`.
 
 ## Config
 
@@ -581,7 +645,7 @@ Then open a new terminal and relaunch CC.
 ## Development
 
 ```bash
-git clone https://github.com/mugpeng/awerouter
+git clone https://github.com/wehuman01/awerouter
 cd awerouter
 pip install -e ".[dev]"
 pytest
@@ -611,7 +675,7 @@ awerouter is part of a growing family of "awesome" tools — CLI-first, local-fi
 
 - **[aweskill](https://aweskill.webioinfo.top/)** — CLI-first skill package manager supporting 47+ AI coding agents.
 - **[aweswitch](https://github.com/Webioinfo01/aweswitch)** — Agent profile switcher for Claude Code, Codex, and OpenCode.
-- **[awerouter](https://github.com/mugpeng/awerouter)** — Smart router that splits requests between Flash and Pro models using structural signals, cutting unnecessary model spend.
+- **[awerouter](https://github.com/wehuman01/awerouter)** — Smart router that splits requests between Flash and Pro models using structural signals, cutting unnecessary model spend.
 - **[aweshelf](https://github.com/Webioinfo01/aweshelf)** — Bookmark, categorize, and restore AI coding sessions; pairs with aweswitch to save profiles and launch with one command.
 - **[aweshare](https://github.com/wehuman01/aweshare)** — Share local Ollama/vLLM backends, domestic coding plans, or authorized OpenAI/Anthropic subscriptions through a self-hosted hub — a sharing economy for tokens.
 - **[awewarm](https://github.com/wehuman01/awewarm)** — Subscription window warmer that keeps AI coding-plan windows active, for local setups and through a remote hub server.
