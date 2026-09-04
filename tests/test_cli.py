@@ -9,7 +9,7 @@ import pytest
 
 from click.testing import CliRunner
 
-from awerouter import runtime
+from awerouter import runtime, service
 from awerouter.cli import _resolve_port, _run_serve, cli
 from awerouter.config import load_for_profile, load_routing
 
@@ -639,10 +639,18 @@ def _seed_instance(pid, profile="cc-1", port=20128, background=True):
     }) + "\n", encoding="utf-8")
 
 
+def _no_installed_services(tmp_path, monkeypatch):
+    """Point the service-file scan at empty dirs: real LaunchAgents/systemd
+    installs on the developer's machine must not leak into status output."""
+    monkeypatch.setattr(service, "launchd_dir", lambda: tmp_path / "LaunchAgents")
+    monkeypatch.setattr(service, "unit_dir", lambda: tmp_path / "systemd")
+
+
 class TestStatus:
     def test_empty(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch)
         monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
+        _no_installed_services(tmp_path, monkeypatch)
         r = CliRunner().invoke(cli, ["serve", "status"])
         assert r.exit_code == 0, r.output
         assert "(no running instances)" in r.output
@@ -651,6 +659,7 @@ class TestStatus:
     def test_lists_foreground_and_background(self, tmp_path, monkeypatch):
         _setup(tmp_path, monkeypatch)
         monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
+        _no_installed_services(tmp_path, monkeypatch)
         _seed_instance(os.getpid(), profile="cc-1", port=20128, background=False)
         r = CliRunner().invoke(cli, ["serve", "status"])
         assert r.exit_code == 0, r.output
