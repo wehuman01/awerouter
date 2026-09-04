@@ -523,7 +523,8 @@ def load_default_profile() -> tuple[dict[str, Provider], RoutingProfile, Setting
         return load_for_profile(next(iter(profiles)))
     die(
         "multiple profiles available, specify one:\n"
-        f"  awerouter serve run <name>\navailable: {', '.join(profiles)}"
+        "  awerouter serve run <name>   (or `awerouter serve all` — every profile on one port)\n"
+        f"available: {', '.join(profiles)}"
     )
 
 
