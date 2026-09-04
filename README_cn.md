@@ -75,9 +75,11 @@ aweskill agent add skill awerouter --global --agent <agent-id>   # claude-code�
 
 </details>
 
-### 2. 在自己的终端启动路由，并接入客户端
+### 2. 在自己的终端启动路由 —— 两种模式
 
-`awerouter serve run` 是常驻 daemon——这是唯一一件 agent 不会替你做的事。在你自己的终端运行：
+`awerouter serve` 是常驻 daemon——这是唯一一件 agent 不会替你做的事。它有两种模式，任选其一在你的终端运行。
+
+**智能路由 —— `awerouter serve run <profile>`。** 单个 profile，按结构信号切分 flash/pro——第 1 步配置的就是它：
 
 ```bash
 awerouter serve run cc-router-1   # 只有一个 profile 时名字可省
@@ -126,6 +128,35 @@ aweswitch oc-awerouter
 `OPENCODE_MODEL` 设为 `auto` 时，awerouter 按结构信号逐请求路由——上游 provider 收到的是 `routing.json` destinations 里配置的实际 model id，而不是 `auto`。Claude Code 同理，用一个 `anthropic` profile（`ANTHROPIC_MODEL=auto`）即可。
 
 </details>
+
+**本地集成路由 —— `awerouter serve all`。** 一个端口服务你配置的所有内容：每个路由 profile（`<profile>/auto` 跑它的智能路由，`/flash`、`/pro` 强制指定档位），以及 provider 在自己的 `models` 列表里声明的每个模型——以 `<provider>/<model>` 固定转发直达、不走路由。把你所有不同的 provider 聚到一个本地 OpenAI/Anthropic 兼容端点后面——一个属于自己的迷你 OpenRouter：
+
+```bash
+awerouter serve all               # 一个端口服务所有 profile 和已声明的模型
+```
+
+客户端指向这个端口，按模型名选择：
+
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:20128/v1
+# 然后就可以调用，例如：step-glm/auto   step-glm/pro   stepfun/step-3.7-flash
+```
+
+要让某个 provider 的模型可以直接调用，在 `providers.json` 里声明（每个协议分组单独声明）：
+
+```json
+{
+  "openai-chat": {
+    "stepfun": {
+      "base_url": "https://api.stepfun.com/step_plan/v1",
+      "auth": "${STEPFUN_AUTH_TOKEN}",
+      "models": ["step-3.7-flash", "step-router-v1"]
+    }
+  }
+}
+```
+
+`GET /v1/models` 列出所有可用名称；未知名称返回描述清晰的 400。`serve all` 只认自己的 `--port`（否则从 20128 起扫描），可选的 `defaultProfile` 把裸 `auto`/`flash`/`pro` 名字映射到某个 profile——完整细节见[配置一节的 gateway 注记](#配置)。
 
 Agent 的其余边界：它也不会运行 `awerouter add`（交互式向导）、`awerouter config restore`（覆盖配置文件）、`awerouter usage clean`（删除日志）或 `awerouter self-update`（升级安装）——这些都留在你的终端。
 

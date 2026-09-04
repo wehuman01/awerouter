@@ -75,9 +75,11 @@ aweskill agent add skill awerouter --global --agent <agent-id>   # claude-code, 
 
 </details>
 
-### 2. Start the router in your terminal and point a client at it
+### 2. Start the router in your terminal — pick a mode
 
-`awerouter serve run` is a long-lived daemon — the one thing the agent will not run for you. Start it in your own terminal:
+`awerouter serve` is a long-lived daemon — the one thing the agent will not run for you. It comes in two modes; run either in your own terminal.
+
+**Smart routing — `awerouter serve run <profile>`.** One profile, flash/pro split by structural signals — what step 1 configured:
 
 ```bash
 awerouter serve run cc-router-1   # profile name optional when only one exists
@@ -126,6 +128,35 @@ Add an aweswitch OpenCode profile pointing at the daemon:
 With `OPENCODE_MODEL` set to `auto`, awerouter routes each request by structural signals — the upstream provider receives the actual model id from `routing.json` destinations, not `auto`. Claude Code works the same way via an `anthropic` profile (`ANTHROPIC_MODEL=auto`).
 
 </details>
+
+**Local integrated gateway — `awerouter serve all`.** One port serving everything you configured: every routing profile (`<profile>/auto` runs its smart route, `/flash` and `/pro` force a tier), plus every model a provider declares in its `models` list as a fixed `<provider>/<model>` forward that bypasses routing. All your different providers behind one local OpenAI/Anthropic-compatible endpoint — a personal mini-OpenRouter:
+
+```bash
+awerouter serve all               # one port for every profile and declared model
+```
+
+Point a client at the port and pick by model name:
+
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:20128/v1
+# then call, e.g.: step-glm/auto   step-glm/pro   stepfun/step-3.7-flash
+```
+
+To make a provider's models directly callable, declare them in `providers.json` (per protocol group):
+
+```json
+{
+  "openai-chat": {
+    "stepfun": {
+      "base_url": "https://api.stepfun.com/step_plan/v1",
+      "auth": "${STEPFUN_AUTH_TOKEN}",
+      "models": ["step-3.7-flash", "step-router-v1"]
+    }
+  }
+}
+```
+
+`GET /v1/models` lists every available name; unknown names return a descriptive 400. `serve all` takes only its own `--port` (or scans from 20128), and the optional `defaultProfile` maps bare `auto`/`flash`/`pro` names to one profile — full details in the [gateway note under routing.json](#config).
 
 The agent's remaining boundaries: it also won't run `awerouter add` (interactive wizard), `awerouter config restore` (overwrites config), `awerouter usage clean` (deletes logs), or `awerouter self-update` (upgrades the installation) — those stay in your terminal.
 

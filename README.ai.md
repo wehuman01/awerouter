@@ -10,7 +10,7 @@ This document is for AI coding agents. Help the user install and configure `awer
 
 ## Do Not Launch Servers
 
-**Never run `awerouter serve run` inside this agent.** It starts a long-lived proxy session. Always tell the user to run it in their own terminal.
+**Never run `awerouter serve run` or `awerouter serve all` inside this agent.** They start a long-lived proxy session. Always tell the user to run them in their own terminal.
 
 You may run these read-only or non-interactive commands: `awerouter init`, `awerouter config path`, `awerouter config show`, `awerouter config edit`, `awerouter list`, `awerouter serve status` (read-only instance listing), `awerouter usage stats`, `awerouter usage log`, `awerouter usage calibrate`, `awerouter usage savings`.
 
@@ -243,11 +243,13 @@ Do not pass `/M` to `setx` — that targets machine scope and requires admin.
 
 ---
 
-## Step 6: Point the client at awerouter
+## Step 6: Tell the user to start serving (pick a mode)
 
-Set the client's base URL to the awerouter daemon port shown by `awerouter serve run`.
+`awerouter serve` is a long-lived daemon — never run it inside the agent. Present the two modes and let the user pick.
 
-Common setups:
+### Option A: Smart routing — one profile, flash/pro split
+
+Client base URLs (the serve banner prints them):
 - Claude Code -> `ANTHROPIC_BASE_URL=http://127.0.0.1:20128`
 - OpenAI-compatible clients -> `OPENAI_BASE_URL=http://127.0.0.1:20128/v1`
 
@@ -257,6 +259,20 @@ awerouter serve run [profile-name]          # foreground
 awerouter serve run [profile-name] -d       # background: survives the terminal, log in ~/.local/state/awerouter/serve-<profile>.log
 awerouter serve run [profile-name] --install  # resident service: starts at login, survives reboots/crashes (launchd / systemd user unit)
 ```
+
+### Option B: Local integrated gateway — every profile and declared model on one port
+
+`awerouter serve all` serves every routing.json profile plus every provider-declared model on one port; clients pick by model name:
+- `<profile>/auto` — that profile's smart route; `<profile>/flash` / `<profile>/pro` force a tier (a profile's own tier labels also work).
+- `<provider>/<model>` — a fixed forward to a model listed in that provider's `models` array (providers.json, per protocol group); it bypasses automatic routing.
+
+Base URLs are the same shape as Option A (`/v1` for the openai wires, bare for anthropic — the endpoint path picks the wire protocol among those a profile serves). `GET /v1/models` lists every available name; unknown names return a descriptive 400. Tell the user:
+
+```bash
+awerouter serve all [--port N] [-d] [--install]
+```
+
+If the user wants a provider's models directly callable, add the `models` list to its providers.json entry — you may make that edit yourself. The optional top-level `defaultProfile` in routing.json maps bare `auto`/`flash`/`pro` names to one profile (keeps Claude Code's three-tier env vars working).
 
 If only one routing profile exists, the profile name is optional. Either way, `awerouter serve status` shows every running instance (foreground, background, and resident). Resident instances show as `svc:launchd` / `svc:systemd`; `awerouter serve stop [PROFILE]` stops them through the service manager (a plain SIGTERM would be instantly undone by the restart policy) — they return at the next login; `awerouter serve stop [PROFILE] --purge` also removes the service file so they never start again. Config edits (routing.json / providers.json) hot-reload without a restart — a broken file keeps the previous config serving until it parses again.
 
@@ -311,7 +327,7 @@ https://github.com/Webioinfo01/aweswitch/blob/main/README.ai.md
 
 ## Safety Rules
 
-- Do not run `awerouter serve run` inside the agent.
+- Do not run `awerouter serve run` or `awerouter serve all` inside the agent.
 - Do not hardcode secrets into config files.
 - When scanning shell configs or the environment for keys, report variable names only — never print key values.
 - Do not edit `providers.json` and `routing.json` in the same step unless the user explicitly asks.

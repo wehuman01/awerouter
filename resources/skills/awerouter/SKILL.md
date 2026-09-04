@@ -9,7 +9,7 @@ This skill covers **configuring** awerouter routing, inspecting profiles, and in
 
 ## Do Not Run Long-Lived Servers
 
-**Never start `awerouter serve run` for the user inside this agent.** It blocks the session. Tell the user to run it in their own terminal.
+**Never start `awerouter serve run` or `awerouter serve all` for the user inside this agent.** They block the session. Tell the user to run them in their own terminal.
 
 ## Language Behavior
 
@@ -81,6 +81,7 @@ Rules:
 - `auth_header` is optional. If omitted, awerouter auto-detects:
   - `anthropic.com` -> `x-api-key`
   - others -> `Authorization` with auto `Bearer ` prefix when needed.
+- `models` (optional, gateway-only): a list of model ids the provider may serve directly. Under `awerouter serve all`, each becomes a fixed `<provider>/<model>` forward that bypasses routing; an undeclared model is rejected with a 400 naming the declared list. Declare `models` separately in each protocol group where the provider appears.
 
 ### routing.json
 
@@ -108,6 +109,15 @@ Rules:
 - Each profile needs `protocol`, `longContextThreshold`, and `destinations`. `protocol` accepts one id or a list (`["anthropic", "openai-chat"]`) — a list serves several wire protocols on one port (clients pick by endpoint path); every destination provider must exist in each served providers.json group.
 - Supported protocols: `anthropic`, `openai-chat`, `openai-responses`.
 - Optional `"rtk": true` enables RTK tool-result compression (default off): verbose tool output (git diff/status/log, grep, listings, build logs) is compressed before forwarding. Fail-open, deterministic; error results and short content pass through. Per-request opt-out header: `X-Awerouter-Token-Saver: off`. After enabling, re-run `awerouter usage calibrate` (thresholds tuned on uncompressed traffic over-trigger pro).
+
+### Gateway mode (serve all)
+
+`awerouter serve all` serves every routing profile and every declared `<provider>/<model>` on one port; the request's model name selects:
+- `<profile>/auto` — that profile's smart route (L1–L4).
+- `<profile>/flash` / `<profile>/pro` — force a tier; a profile's own L2 tier labels also work.
+- `<provider>/<model>` — fixed forward to a model declared in that provider's `models` list; bypasses routing. Requires at least one profile serving that wire protocol.
+
+Bare `auto`/`flash`/`pro` resolve via routing.json's top-level `defaultProfile`. The endpoint path picks the wire protocol among those a profile serves; `GET /v1/models` lists all names; unknown names return descriptive 400s. Never run `serve all` inside the agent — the server belongs in the user's terminal (`serve all --install` exists as a resident service for them).
 
 ## Routing Logic
 
