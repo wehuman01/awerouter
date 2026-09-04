@@ -79,7 +79,9 @@ aweskill agent add skill awerouter --global --agent <agent-id>   # claude-code, 
 
 `awerouter serve` is a long-lived daemon — the one thing the agent will not run for you. It has two serving modes, and they compose: run a smart-routing profile for day-to-day coding traffic, and a gateway alongside it when you also want every model callable by name.
 
-**Smart routing — `awerouter serve run <profile>`.** One profile, flash/pro split by structural signals: cheap drafting goes to flash, hard work to pro. Typical combinations (from a real config — a StepFun step_plan key, a GLM coding plan, a Codex subscription):
+#### Smart routing — `awerouter serve run <profile>`
+
+One profile, flash/pro split by structural signals: cheap drafting goes to flash, hard work to pro. Typical combinations (from a real config — a StepFun step_plan key, a GLM coding plan, a Codex subscription):
 
 - flash `stepfun-1,step-router-v1` / pro `glm,glm-5.3` — StepFun's step_plan router soaks up the cheap traffic, the GLM coding plan takes the hard calls (the step-glm combo)
 - flash `stepfun-1,step-3.7-flash` / pro `glm,glm-5.3` plus `imageModel: "flash"` and `imageBridge: true` — same pair, but the text-only flagship gains a pair of eyes (step-glm-mm; see [Image Bridge](#image-bridge))
@@ -133,7 +135,9 @@ With `OPENCODE_MODEL` set to `auto`, awerouter routes each request by structural
 
 </details>
 
-**Local integrated gateway — `awerouter serve all`.** One port serving everything you configured: every routing profile (`<profile>/auto` runs its smart route, `/flash` and `/pro` force a tier), plus every model a provider declares in its `models` list as a fixed `<provider>/<model>` forward that bypasses routing. All your different providers behind one local OpenAI/Anthropic-compatible endpoint — a personal mini-OpenRouter. From the same real config: StepFun's `step-router-v1` and `step-explore`, GLM's `glm-5.3` and `glm-5.3-flash`, Doubao's `Kimi-K2.7-Code` and `Doubao-Seed-Evolving`, a Codex subscription's `gpt-5.6-luna` — all callable through one port; and one provider may appear several times under different keys (stepfun-1/2/3: same models, three keys) to pool quota across accounts:
+#### Local integrated gateway — `awerouter serve all`
+
+One port serving everything you configured: every routing profile (`<profile>/auto` runs its smart route, `/flash` and `/pro` force a tier), plus every model a provider declares in its `models` list as a fixed `<provider>/<model>` forward that bypasses routing. All your different providers behind one local OpenAI/Anthropic-compatible endpoint — a personal mini-OpenRouter. From the same real config: StepFun's `step-router-v1` and `step-explore`, GLM's `glm-5.3` and `glm-5.3-flash`, Doubao's `Kimi-K2.7-Code` and `Doubao-Seed-Evolving`, a Codex subscription's `gpt-5.6-luna` — all callable through one port; and one provider may appear several times under different keys (stepfun-1/2/3: same models, three keys) to pool quota across accounts:
 
 ```bash
 awerouter serve all               # one port for every profile and declared model

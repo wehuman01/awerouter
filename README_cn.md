@@ -79,7 +79,9 @@ aweskill agent add skill awerouter --global --agent <agent-id>   # claude-code�
 
 `awerouter serve` 是常驻 daemon——这是唯一一件 agent 不会替你做的事。它有两种服务模式，而且可以并存：日常编码流量跑一个智能路由 profile，需要所有模型按名字调用时，在旁边再开一个集成网关。
 
-**智能路由 —— `awerouter serve run <profile>`。** 单个 profile，按结构信号切分 flash/pro：便宜的起草走 flash，难活走 pro。常见组合（取自一份真实配置——StepFun step_plan 的 key + GLM coding plan + Codex 订阅）：
+#### 智能路由 —— `awerouter serve run <profile>`
+
+单个 profile，按结构信号切分 flash/pro：便宜的起草走 flash，难活走 pro。常见组合（取自一份真实配置——StepFun step_plan 的 key + GLM coding plan + Codex 订阅）：
 
 - flash `stepfun-1,step-router-v1` / pro `glm,glm-5.3`——StepFun 的 step_plan router 承接廉价流量，GLM coding plan 处理难活（step-glm 组合）
 - flash `stepfun-1,step-3.7-flash` / pro `glm,glm-5.3`，再加 `imageModel: "flash"`、`imageBridge: true`——同一对模型，但纯文本旗舰长出了眼睛（step-glm-mm，见[图片桥接](#图片桥接)）
@@ -133,7 +135,9 @@ aweswitch oc-awerouter
 
 </details>
 
-**本地集成路由 —— `awerouter serve all`。** 一个端口服务你配置的所有内容：每个路由 profile（`<profile>/auto` 跑它的智能路由，`/flash`、`/pro` 强制指定档位），以及 provider 在自己的 `models` 列表里声明的每个模型——以 `<provider>/<model>` 固定转发直达、不走路由。把你所有不同的 provider 聚到一个本地 OpenAI/Anthropic 兼容端点后面——一个属于自己的迷你 OpenRouter。同样取自那份真实配置：StepFun 的 `step-router-v1` 和 `step-explore`、GLM 的 `glm-5.3` 和 `glm-5.3-flash`、豆包的 `Kimi-K2.7-Code` 和 `Doubao-Seed-Evolving`、Codex 订阅的 `gpt-5.6-luna`——一个端口全部可调；同一个 provider 还可以配多个条目（stepfun-1/2/3：同一组模型、三把 key），用多账号摊平额度：
+#### 本地集成路由 —— `awerouter serve all`
+
+一个端口服务你配置的所有内容：每个路由 profile（`<profile>/auto` 跑它的智能路由，`/flash`、`/pro` 强制指定档位），以及 provider 在自己的 `models` 列表里声明的每个模型——以 `<provider>/<model>` 固定转发直达、不走路由。把你所有不同的 provider 聚到一个本地 OpenAI/Anthropic 兼容端点后面——一个属于自己的迷你 OpenRouter。同样取自那份真实配置：StepFun 的 `step-router-v1` 和 `step-explore`、GLM 的 `glm-5.3` 和 `glm-5.3-flash`、豆包的 `Kimi-K2.7-Code` 和 `Doubao-Seed-Evolving`、Codex 订阅的 `gpt-5.6-luna`——一个端口全部可调；同一个 provider 还可以配多个条目（stepfun-1/2/3：同一组模型、三把 key），用多账号摊平额度：
 
 ```bash
 awerouter serve all               # 一个端口服务所有 profile 和已声明的模型
