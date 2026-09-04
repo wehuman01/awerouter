@@ -75,14 +75,18 @@ aweskill agent add skill awerouter --global --agent <agent-id>   # claude-code, 
 
 </details>
 
-### 2. Start the router in your terminal — pick a mode
+### 2. Start the router in your terminal — two serving modes
 
-`awerouter serve` is a long-lived daemon — the one thing the agent will not run for you. It comes in two modes; run either in your own terminal.
+`awerouter serve` is a long-lived daemon — the one thing the agent will not run for you. It has two serving modes, and they compose: run a smart-routing profile for day-to-day coding traffic, and a gateway alongside it when you also want every model callable by name.
 
-**Smart routing — `awerouter serve run <profile>`.** One profile, flash/pro split by structural signals — what step 1 configured:
+**Smart routing — `awerouter serve run <profile>`.** One profile, flash/pro split by structural signals: cheap drafting goes to flash, hard work to pro. Typical combinations (from a real config — a StepFun step_plan key, a GLM coding plan, a Codex subscription):
+
+- flash `stepfun-1,step-router-v1` / pro `glm,glm-5.3` — StepFun's step_plan router soaks up the cheap traffic, the GLM coding plan takes the hard calls (the step-glm combo)
+- flash `stepfun-1,step-3.7-flash` / pro `glm,glm-5.3` plus `imageModel: "flash"` and `imageBridge: true` — same pair, but the text-only flagship gains a pair of eyes (step-glm-mm; see [Image Bridge](#image-bridge))
+- flash `stepfun-1,step-router-v1` / pro `codex,gpt-5.6-terra` — a ChatGPT subscription rides pro while a keyed plan drafts (step-codex)
 
 ```bash
-awerouter serve run cc-router-1   # profile name optional when only one exists
+awerouter serve run step-glm       # profile name optional when only one exists
 #    -d runs it in the background (survives the terminal; log: ~/.local/state/awerouter/serve-<profile>.log)
 #    --install runs it as a resident service: starts at login, survives reboots and crashes
 ```
@@ -129,7 +133,7 @@ With `OPENCODE_MODEL` set to `auto`, awerouter routes each request by structural
 
 </details>
 
-**Local integrated gateway — `awerouter serve all`.** One port serving everything you configured: every routing profile (`<profile>/auto` runs its smart route, `/flash` and `/pro` force a tier), plus every model a provider declares in its `models` list as a fixed `<provider>/<model>` forward that bypasses routing. All your different providers behind one local OpenAI/Anthropic-compatible endpoint — a personal mini-OpenRouter:
+**Local integrated gateway — `awerouter serve all`.** One port serving everything you configured: every routing profile (`<profile>/auto` runs its smart route, `/flash` and `/pro` force a tier), plus every model a provider declares in its `models` list as a fixed `<provider>/<model>` forward that bypasses routing. All your different providers behind one local OpenAI/Anthropic-compatible endpoint — a personal mini-OpenRouter. From the same real config: StepFun's `step-router-v1` and `step-explore`, GLM's `glm-5.3` and `glm-5.3-flash`, Doubao's `Kimi-K2.7-Code` and `Doubao-Seed-Evolving`, a Codex subscription's `gpt-5.6-luna` — all callable through one port; and one provider may appear several times under different keys (stepfun-1/2/3: same models, three keys) to pool quota across accounts:
 
 ```bash
 awerouter serve all               # one port for every profile and declared model
@@ -139,7 +143,7 @@ Point a client at the port and pick by model name:
 
 ```bash
 export OPENAI_BASE_URL=http://127.0.0.1:20128/v1
-# then call, e.g.: step-glm/auto   step-glm/pro   stepfun/step-3.7-flash
+# then call, e.g.: step-glm/auto   step-deepseek/pro   doubao/Kimi-K2.7-Code   codex/gpt-5.6-luna
 ```
 
 To make a provider's models directly callable, declare them in `providers.json` (per protocol group):
@@ -578,6 +582,8 @@ L4 is a consequence checkpoint, not a difficulty guess: the turn right *after* c
 All tool-keyed rules live in one block — `settings.toolRouting` (`webSearch`/`edit`) — and the serve banner prints the active mapping on one `tool -> ...` line.
 
 ## Image Bridge
+
+The canonical combination is the step-glm-mm template: **glm-5.3 on the GLM coding plan is a strong text-only flagship — no eyes; StepFun's step-3.7-flash can see.** Put both in one profile — `destinations.pro = "glm,glm-5.3"`, `destinations.flash = "stepfun,step-3.7-flash"`, plus `imageModel: "flash"`, `defaultModel: "pro"`, `imageBridge: true` — and glm-5.3 does all the text work while step-3.7-flash supplies the eyes: image-bearing requests go to the multimodal flash (the L1 capability guard), and follow-up text turns return to glm-5.3 carrying flash's transcriptions of those images. One port, dual protocol — a flagship with a pair of eyes.
 
 `settings.imageBridge: true` (opt-in; the step-glm-mm template turns it on) gives a text-only pro model a second-hand pair of eyes. When a request carries images only in *history* — the final message is text — awerouter first has the multimodal flash destination (`imageModel`) transcribe each distinct image once, then replaces the image blocks with the transcription text before routing, so the request keeps routing normally — typically landing on `defaultModel` (pro) — instead of the session being pinned to flash forever. A fresh upload this turn still routes to flash natively, and `/v1/messages/count_tokens` sees the same rewritten body, so estimates match what is sent. Transcriptions are cached by image content for the process lifetime (a restart re-transcribes each image once); if any caption call fails, the request keeps its original images and the L1 image guard routes it as before. Codex subscription logins skip the bridge (their SSE-only backend cannot serve a non-streaming caption call).
 
