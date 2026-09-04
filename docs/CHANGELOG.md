@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Windows CI repair: since v0.5.5 the windows-latest CI legs have been red — v0.5.7's resident-service feature made `serve status` die on Windows, and the `_is_awerouter_process` tests assume a readable command line that Windows cannot provide.
+
+### Fixed
+- `awerouter serve status` works on Windows again: `installed_services()` now reports none on platforms without a service manager instead of exiting with the resident-services error (which is what `service_kind()` raised). Mutating paths (`--install`, resident stop/purge) still refuse loudly through the new `require_service_kind()` wrapper — same message as before (`src/awerouter/service.py`; `TestStatus` in `tests/test_cli.py` runs on Windows again).
+- `_read_cmdline` on Windows returns "unverifiable" (None) instead of a false `""`: there is no `/proc`, and MSYS `ps` cannot see native processes, so the old fallback misclassified every live pid as dead. The `serve stop` guard it feeds is POSIX-only today, but the contract no longer lies for any future Windows stop path (`src/awerouter/runtime.py`). `TestIsAwerouterProcess` skips on Windows with that reason — command-line matching cannot be observed where reading is impossible.
+
 ## v0.5.8
 
 Two correctness fixes to v0.5.7's features: gateway direct forwards no longer pollute per-profile usage stats, and resident-service installs keep percent-encoded env values intact.

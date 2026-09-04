@@ -82,6 +82,10 @@ def _read_cmdline(pid: int) -> "str | None":
         except OSError:
             return None
         return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+    if os.name == "nt":
+        # no /proc, and the ps fallback cannot see native processes there
+        # (MSYS ps lists only MSYS pids) — unreadable, not dead
+        return None
     try:
         out = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],

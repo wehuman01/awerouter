@@ -128,6 +128,9 @@ class TestPidAlive:
         assert runtime.pid_alive(2 ** 30) is False
 
 
+@pytest.mark.skipif(os.name == "nt",
+                    reason="cmdline reading needs /proc or ps; on Windows every "
+                           "pid is unverifiable, so matching cannot be tested")
 class TestIsAwerouterProcess:
     def test_token_awerouter_matches(self):
         # bare "awerouter" token — the `python -m awerouter ...` daemon form

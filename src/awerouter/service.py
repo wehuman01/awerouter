@@ -40,16 +40,24 @@ _PROXY_VARS = ("http_proxy", "https_proxy", "all_proxy", "no_proxy",
                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
 
 
-def service_kind() -> str:
-    """Which service manager owns resident services on this platform."""
+def service_kind() -> "str | None":
+    """Which service manager owns resident services here (None: none does)."""
     if sys.platform == "darwin":
         return "launchd"
     if sys.platform.startswith("linux"):
         return "systemd"
-    die(
-        "resident services support macOS (launchd) and Linux (systemd user unit)\n"
-        "(same platforms as -d; Windows is unsupported)"
-    )
+    return None
+
+
+def require_service_kind() -> str:
+    """service_kind() for paths that manage services: dies where there is none."""
+    kind = service_kind()
+    if kind is None:
+        die(
+            "resident services support macOS (launchd) and Linux (systemd user unit)\n"
+            "(same platforms as -d; Windows is unsupported)"
+        )
+    return kind
 
 
 def service_slug(name: str) -> str:
@@ -214,7 +222,7 @@ def install(name: str, cmd: list, log: Path, environment: dict) -> Path:
 
     Re-installing is the update path: the job is booted out first, so the
     freshly written file (new host/port/env) is what bootstrap loads."""
-    kind = service_kind()
+    kind = require_service_kind()
     slug = service_slug(name)
     env = dict(environment)
     env["AWEROUTER_SERVICE"] = kind  # marker: how registration knows it's resident
@@ -268,7 +276,7 @@ def wait_registered(name: str, timeout: float) -> "dict | None":
     Matches the registration the marker env var identifies (AWEROUTER_SERVICE
     == this platform's kind), so a leftover plain background instance of the
     same profile can't be mistaken for the service starting."""
-    kind = service_kind()
+    kind = require_service_kind()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for inst in runtime.list_instances():
@@ -281,7 +289,7 @@ def wait_registered(name: str, timeout: float) -> "dict | None":
 def stop(name: str) -> None:
     """Stop the resident job for name (idempotent; stays installed)."""
     slug = service_slug(name)
-    if service_kind() == "launchd":
+    if require_service_kind() == "launchd":
         _bootout(slug)
     else:
         _systemctl(["stop", _unit(slug)])
@@ -291,16 +299,17 @@ def purge(name: str) -> "Path | None":
     """Stop the job and remove its service file. Returns the removed path, or
     None when no service file exists for name."""
     slug = service_slug(name)
-    path = plist_path(slug) if service_kind() == "launchd" else unit_path(slug)
+    kind = require_service_kind()
+    path = plist_path(slug) if kind == "launchd" else unit_path(slug)
     if not path.exists():
         stop(name)  # not installed, but a stale loaded job shouldn't linger
         return None
-    if service_kind() == "systemd":
+    if kind == "systemd":
         _systemctl(["disable", "--now", _unit(slug)])
     else:
         _bootout(slug)
     path.unlink()
-    if service_kind() == "systemd":
+    if kind == "systemd":
         _systemctl(["daemon-reload"])
     return path
 
@@ -320,8 +329,11 @@ def installed_services() -> list:
     """Resident services this installation owns: [{name, kind, path}].
 
     Reads the service files themselves (not runtime state), so an installed
-    but currently stopped service is still listed."""
+    but currently stopped service is still listed. Platforms without a
+    service manager report none."""
     kind = service_kind()
+    if kind is None:
+        return []
     out = []
     if kind == "launchd":
         for path in sorted(launchd_dir().glob(LABEL_PREFIX + "*.plist")):
