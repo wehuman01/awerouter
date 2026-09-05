@@ -20,6 +20,7 @@ from awerouter.server import (
     _filter_headers,
     _loopback_proxy_warning,
     _noauth_warning,
+    _pool_models_warning,
     _reload_config,
     _resolve_auto_threshold,
     _serve,
@@ -2069,3 +2070,29 @@ class TestFailoverQueues:
         out = capsys.readouterr().out
         assert "failover" in out
         assert "flash: glm/glm-4.7-flash  |  pro: flash (implicit)" in out
+
+
+class TestPoolModelsWarning:
+    def test_matching_sets_silent(self):
+        groups = {"anthropic": {
+            f"s-{i}": Provider(f"s-{i}", "http://x", "k",
+                               models=("m1", "m2"), pool="stepfun")
+            for i in (1, 2)
+        }}
+        assert _pool_models_warning(groups) is None
+
+    def test_drifting_sets_warn_per_member(self):
+        groups = {"anthropic": {
+            "s-1": Provider("s-1", "http://x", "k", models=("m1", "m2"), pool="stepfun"),
+            "s-2": Provider("s-2", "http://x", "k", models=("m1",), pool="stepfun"),
+            "unpooled": Provider("unpooled", "http://x", "k", models=("m9",)),
+        }}
+        w = _pool_models_warning(groups)
+        assert w is not None and "pool 'stepfun'" in w and "s-2: m1" in w
+
+    def test_same_pool_name_in_another_group_is_separate(self):
+        groups = {
+            "anthropic": {"a": Provider("a", "http://x", "k", models=("m1",), pool="p")},
+            "openai-chat": {"b": Provider("b", "http://x", "k", models=("m2",), pool="p")},
+        }
+        assert _pool_models_warning(groups) is None

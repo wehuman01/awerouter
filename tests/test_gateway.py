@@ -768,3 +768,148 @@ class TestGatewayFailover:
                 await up_server.close()
         run(t())
         assert len(calls) == 1  # exactly one attempt: the pinned destination
+
+
+class TestGatewayDirectPool:
+    """'provider/<model>' forwards fail over across same-pool accounts — the
+    SAME model on the next account in declaration order wrapping from the
+    named entry. One 'pool' tag per entry replaces the O(n^2) mutual-backups
+    lists the multi-account quota-spread setup would otherwise need."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cooldowns(self):
+        from awerouter import server
+        server._COOLDOWN_UNTIL.clear()
+        yield
+        server._COOLDOWN_UNTIL.clear()
+
+    def _pooled_providers(self, port, pool="stepfun",
+                          models=("step-3.7-flash", "step-router-v1")):
+        def group():
+            return {
+                f"stepfun-{i}": Provider(f"stepfun-{i}", f"http://127.0.0.1:{port}",
+                                         f"${{STEPFUN_KEY_{i}}}", models=models,
+                                         pool=pool)
+                for i in (1, 2, 3)
+            }
+        return {p: group() for p in PROTOCOLS}
+
+    def _quota_upstream(self, dead_keys, hits):
+        """One mock upstream: accounts whose key is in dead_keys answer 429,
+        everyone else echoes the model back."""
+        async def up(request):
+            auth = request.headers.get("authorization", "")
+            hits.append(auth.removeprefix("Bearer "))
+            if auth.removeprefix("Bearer ") in dead_keys:
+                return web.json_response({"error": "quota"}, status=429)
+            return web.json_response({"model": (await request.json())["model"]})
+        app = web.Application()
+        app.router.add_post("/v1/messages", up)
+        return TestServer(app)
+
+    def test_429_fails_over_to_next_account_same_model(self, monkeypatch):
+        for i in (1, 2, 3):
+            monkeypatch.setenv(f"STEPFUN_KEY_{i}", f"key-{i}")
+        hits = []
+
+        async def t():
+            up_server = self._quota_upstream({"key-1"}, hits)
+            await up_server.start_server()
+            try:
+                entries = {"glm": _entry("glm", "anthropic", "f", "p")}
+                providers = self._pooled_providers(up_server.port)
+                async with TestClient(TestServer(
+                        create_gateway_app(entries, "glm", providers))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "stepfun-1/step-3.7-flash",
+                        "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+                    assert (await r.json())["model"] == "step-3.7-flash"
+            finally:
+                await up_server.close()
+        run(t())
+        assert hits == ["key-1", "key-2"]
+        from awerouter.logging import tail
+        e = tail(1)[0]
+        assert e.profile == "direct"
+        assert e.provider == "stepfun-2"
+        assert e.label == "direct→fb:stepfun-2,step-3.7-flash"
+        assert e.fallback_hops == 1
+
+    def test_pool_wraps_from_the_named_entry(self, monkeypatch):
+        """Naming the middle account hops to the LAST one next — declaration
+        order wraps, overflow flows to the next account, not back to a
+        de-facto primary."""
+        for i in (1, 2, 3):
+            monkeypatch.setenv(f"STEPFUN_KEY_{i}", f"key-{i}")
+        hits = []
+
+        async def t():
+            up_server = self._quota_upstream({"key-2"}, hits)
+            await up_server.start_server()
+            try:
+                entries = {"glm": _entry("glm", "anthropic", "f", "p")}
+                providers = self._pooled_providers(up_server.port)
+                async with TestClient(TestServer(
+                        create_gateway_app(entries, "glm", providers))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "stepfun-2/step-3.7-flash",
+                        "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        assert hits == ["key-2", "key-3"]
+
+    def test_exhausted_pool_passes_the_last_response_through(self, monkeypatch):
+        for i in (1, 2, 3):
+            monkeypatch.setenv(f"STEPFUN_KEY_{i}", f"key-{i}")
+        hits = []
+
+        async def t():
+            up_server = self._quota_upstream({"key-1", "key-2", "key-3"}, hits)
+            await up_server.start_server()
+            try:
+                entries = {"glm": _entry("glm", "anthropic", "f", "p")}
+                providers = self._pooled_providers(up_server.port)
+                async with TestClient(TestServer(
+                        create_gateway_app(entries, "glm", providers))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "stepfun-1/step-3.7-flash",
+                        "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 429
+            finally:
+                await up_server.close()
+        run(t())
+        assert hits == ["key-1", "key-2", "key-3"]
+
+    def test_member_without_the_model_is_skipped(self, monkeypatch):
+        """A pool member that did not declare the model is not a candidate —
+        capability, not error."""
+        for i in (1, 2, 3):
+            monkeypatch.setenv(f"STEPFUN_KEY_{i}", f"key-{i}")
+        hits = []
+
+        async def t():
+            up_server = self._quota_upstream({"key-1"}, hits)
+            await up_server.start_server()
+            try:
+                entries = {"glm": _entry("glm", "anthropic", "f", "p")}
+                providers = self._pooled_providers(up_server.port)
+                providers["anthropic"]["stepfun-2"] = Provider(
+                    "stepfun-2", f"http://127.0.0.1:{up_server.port}",
+                    "${STEPFUN_KEY_2}", models=("step-router-v1",), pool="stepfun")
+                async with TestClient(TestServer(
+                        create_gateway_app(entries, "glm", providers))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "stepfun-1/step-3.7-flash",
+                        "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        assert hits == ["key-1", "key-3"]

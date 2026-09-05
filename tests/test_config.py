@@ -1434,3 +1434,33 @@ class TestMultimodalFlag:
             self._providers(tmp_path, monkeypatch,
                             {"base_url": "https://api.stepfun.com", "auth": "${K}",
                              "multimodal": "yes"})
+
+
+class TestPoolFlag:
+    def _providers(self, tmp_path, monkeypatch, entry):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"anthropic": {"p": entry}}, {})
+        return load_providers()["anthropic"]["p"]
+
+    def test_default_empty(self, tmp_path, monkeypatch):
+        p = self._providers(tmp_path, monkeypatch,
+                            {"base_url": "https://api.stepfun.com", "auth": "${K}"})
+        assert p.pool == ""
+
+    def test_parsed(self, tmp_path, monkeypatch):
+        p = self._providers(tmp_path, monkeypatch,
+                            {"base_url": "https://api.stepfun.com", "auth": "${K}",
+                             "pool": "stepfun"})
+        assert p.pool == "stepfun"
+
+    def test_non_string_dies(self, tmp_path, monkeypatch):
+        with pytest.raises(SystemExit, match="'pool' must be a non-empty"):
+            self._providers(tmp_path, monkeypatch,
+                            {"base_url": "https://api.stepfun.com", "auth": "${K}",
+                             "pool": 3})
+
+    def test_whitespace_only_dies(self, tmp_path, monkeypatch):
+        with pytest.raises(SystemExit, match="'pool' must be a non-empty"):
+            self._providers(tmp_path, monkeypatch,
+                            {"base_url": "https://api.stepfun.com", "auth": "${K}",
+                             "pool": "   "})

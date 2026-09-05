@@ -46,9 +46,8 @@ from awerouter.config import (
 )
 from awerouter.logging import append, auto_threshold, ensure_log_dir
 from awerouter.protocols import ENDPOINT_PATHS, extract
-from awerouter.router import build_queue, resolve
+from awerouter.router import build_direct_queue, build_queue, resolve
 from awerouter.types import (
-    Candidate,
     Destination,
     RequestLog,
     ResolveResult,
@@ -369,9 +368,11 @@ class _RoutingState:
                 destination="direct", model=direct_dest.model, label="direct",
                 inspect=extract(protocol, body),
             )
-            # A direct forward is pinned by name: a length-1 queue, so "never
-            # falls back" needs no special case in the retry loop.
-            self.queue = (Candidate("direct", direct_dest),)
+            # Unpooled stays pinned by name (build_direct_queue returns a
+            # length-1 queue, so "never falls back" needs no special case in
+            # the retry loop); a provider 'pool' tag expands into same-model
+            # account failover.
+            self.queue = build_direct_queue(direct_dest, self.result.inspect, providers)
         self.queue_pos = 0
         self.fallback_hops = 0
         self.tried: list[str] = []   # candidates attempted, named in the exhausted error
@@ -1256,6 +1257,30 @@ def _noauth_warning(providers: dict) -> "str | None":
     )
 
 
+def _pool_models_warning(groups: dict) -> "str | None":
+    """Warn when a pool's members declare different model sets — legal
+    (accounts can differ in what they unlocked) but easy to get wrong by
+    hand: the direct-forward failover queue for a model not every member
+    declares is silently shorter."""
+    lines: list[str] = []
+    for protocol, group in groups.items():
+        pools: dict = {}
+        for p in group.values():
+            if p.pool:
+                pools.setdefault(p.pool, []).append(p)
+        for pool, members in pools.items():
+            if len({m.models for m in members}) == 1:
+                continue
+            lines.append(f"warning: pool '{pool}' ({protocol}) members declare "
+                         "different models:")
+            for m in members:
+                models = ", ".join(m.models) or "(none)"
+                lines.append(f"  {m.name}: {models}")
+            lines.append("  (legal, but failover queues are shorter for models "
+                         "not every member declares)")
+    return "\n".join(lines) if lines else None
+
+
 def _codex_login_warning(providers: dict) -> "str | None":
     """Warn when configured Codex providers cannot load the local login."""
     offenders = sorted(
@@ -1362,15 +1387,17 @@ async def _run_until_stopped(runner, watcher) -> None:
         await runner.cleanup()
 
 
-def _serve_warnings(providers: dict) -> None:
+def _serve_warnings(providers: dict, groups: dict) -> None:
     """Serve-start warnings shared by both modes (loopback proxy, no-auth,
-    dead logins) over one flat {name: Provider} view."""
+    dead logins, pool model drift) over one flat {name: Provider} view, plus
+    the per-protocol groups the pool check needs."""
     update_hint = cached_update_hint()
     if update_hint:
         print()
         print(update_hint)
     for warning in (_loopback_proxy_warning(), _noauth_warning(providers),
-                    _codex_login_warning(providers), _claude_login_warning(providers)):
+                    _codex_login_warning(providers), _claude_login_warning(providers),
+                    _pool_models_warning(groups)):
         if warning:
             print()
             print(warning)
@@ -1427,7 +1454,7 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     print()
     print(_client_hints(profile.protocols, display_host, actual_port, settings))
-    _serve_warnings(_flat_providers(providers))
+    _serve_warnings(_flat_providers(providers), providers)
     try:
         runtime.register(profile.name, profile.protocol, actual_port, host, background)
     except OSError as exc:
@@ -1573,7 +1600,9 @@ async def _serve_gateway(host: str, port: int, port_explicit: bool = False,
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     print()
     print(_gateway_client_hints(entries, default_profile, display_host, actual_port))
-    _serve_warnings(_gateway_flat_providers(entries))
+    _serve_warnings(_gateway_flat_providers(entries), {
+        proto: group for e in entries.values() for proto, group in e.providers.items()
+    })
     try:
         runtime.register(GATEWAY_PROFILE_NAME, "+".join(_gateway_serving_protocols(entries)),
                          actual_port, host, background)

@@ -5,7 +5,7 @@ import json
 import pytest
 
 from awerouter.protocols import effective_tokens, estimate_tokens, extract
-from awerouter.router import build_queue, resolve
+from awerouter.router import build_direct_queue, build_queue, resolve
 from awerouter.types import Destination, InspectResult, Provider, RoutingProfile
 
 
@@ -946,3 +946,62 @@ class TestBuildQueue:
         assert [c.dest.model for c in
                 build_queue("flash", self._profile(), self._feat(has_image=True),
                             providers)] == ["step-3.5-flash"]
+
+
+class TestBuildDirectQueue:
+    """Gateway 'provider/<model>' queue expansion: pinned unless the provider
+    pools its accounts, pool order wrapping from the named entry, and the
+    image guard on the tail."""
+
+    def _feat(self, has_image=False):
+        return InspectResult(token_count=1, has_image=has_image, has_web_search=False,
+                             message_count=1)
+
+    def _names(self, queue):
+        return [(c.tier, c.dest.provider_name, c.dest.model) for c in queue]
+
+    def _providers(self):
+        def account(name):
+            return Provider(name, "http://x", "k",
+                            models=("step-3.7-flash", "step-router-v1"), pool="stepfun")
+        return {
+            "stepfun-1": account("stepfun-1"),
+            "stepfun-2": account("stepfun-2"),
+            "stepfun-3": account("stepfun-3"),
+            "glm": Provider("glm", "http://x", "k", models=("glm-5.3",)),
+        }
+
+    def test_unpooled_is_pinned(self):
+        providers = {"stepfun": Provider("stepfun", "http://x", "k",
+                                         models=("step-3.7-flash",))}
+        assert self._names(build_direct_queue(
+            Destination("stepfun", "step-3.7-flash"), self._feat(), providers)) == [
+            ("direct", "stepfun", "step-3.7-flash")]
+
+    def test_pool_wraps_declaration_order_from_the_named_entry(self):
+        providers = self._providers()
+        assert self._names(build_direct_queue(
+            Destination("stepfun-2", "step-3.7-flash"), self._feat(), providers)) == [
+            ("direct", "stepfun-2", "step-3.7-flash"),
+            ("direct", "stepfun-3", "step-3.7-flash"),
+            ("direct", "stepfun-1", "step-3.7-flash")]
+
+    def test_member_without_the_model_is_not_a_candidate(self):
+        providers = self._providers()
+        providers["stepfun-3"] = Provider("stepfun-3", "http://x", "k",
+                                          models=("step-router-v1",), pool="stepfun")
+        assert self._names(build_direct_queue(
+            Destination("stepfun-1", "step-3.7-flash"), self._feat(), providers)) == [
+            ("direct", "stepfun-1", "step-3.7-flash"),
+            ("direct", "stepfun-2", "step-3.7-flash")]
+
+    def test_image_guard_keeps_declared_drops_undeclared_primary_stands(self):
+        providers = self._providers()
+        providers["stepfun-2"] = Provider("stepfun-2", "http://x", "k",
+                                          models=("step-3.7-flash", "step-router-v1"),
+                                          pool="stepfun", multimodal=True)
+        assert self._names(build_direct_queue(
+            Destination("stepfun-1", "step-3.7-flash"),
+            self._feat(has_image=True), providers)) == [
+            ("direct", "stepfun-1", "step-3.7-flash"),
+            ("direct", "stepfun-2", "step-3.7-flash")]

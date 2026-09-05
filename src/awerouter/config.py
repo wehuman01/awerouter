@@ -217,9 +217,18 @@ def load_providers(path: Optional[Path] = None) -> dict[str, dict[str, Provider]
             if not isinstance(multimodal_raw, bool):
                 die(f"provider '{protocol}.{name}' 'multimodal' must be true or "
                     f"false, got: {multimodal_raw!r}")
+            pool_raw = entry.get("pool")
+            if pool_raw is None:
+                pool = ""
+            elif isinstance(pool_raw, str) and pool_raw.strip():
+                pool = pool_raw.strip()
+            else:
+                die(f"provider '{protocol}.{name}' 'pool' must be a non-empty "
+                    f"account-pool id string (shared by same-vendor entries), "
+                    f"got: {pool_raw!r}")
             group_providers[name] = Provider(
                 name=name, base_url=base_url, auth=auth, auth_header=auth_header,
-                models=models, multimodal=multimodal_raw,
+                models=models, multimodal=multimodal_raw, pool=pool,
             )
         result[protocol] = group_providers
     return result

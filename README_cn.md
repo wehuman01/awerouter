@@ -137,7 +137,7 @@ aweswitch oc-awerouter
 
 #### 本地集成路由 —— `awerouter serve all`
 
-一个端口服务你配置的所有内容：每个路由 profile（`<profile>/auto` 跑它的智能路由，`/flash`、`/pro` 强制指定档位），以及 provider 在自己的 `models` 列表里声明的每个模型——以 `<provider>/<model>` 固定转发直达、不走路由。把你所有不同的 provider 聚到一个本地 OpenAI/Anthropic 兼容端点后面——一个属于自己的迷你 OpenRouter。同样取自那份真实配置：StepFun 的 `step-router-v1` 和 `step-explore`、GLM 的 `glm-5.3` 和 `glm-5.3-flash`、豆包的 `Kimi-K2.7-Code` 和 `Doubao-Seed-Evolving`、Codex 订阅的 `gpt-5.6-luna`——一个端口全部可调；同一个 provider 还可以配多个条目（stepfun-1/2/3：同一组模型、三把 key），用多账号摊平额度：
+一个端口服务你配置的所有内容：每个路由 profile（`<profile>/auto` 跑它的智能路由，`/flash`、`/pro` 强制指定档位），以及 provider 在自己的 `models` 列表里声明的每个模型——以 `<provider>/<model>` 固定转发直达、不走路由。把你所有不同的 provider 聚到一个本地 OpenAI/Anthropic 兼容端点后面——一个属于自己的迷你 OpenRouter。同样取自那份真实配置：StepFun 的 `step-router-v1` 和 `step-explore`、GLM 的 `glm-5.3` 和 `glm-5.3-flash`、豆包的 `Kimi-K2.7-Code` 和 `Doubao-Seed-Evolving`、Codex 订阅的 `gpt-5.6-luna`——一个端口全部可调；同一个 provider 还可以配多个条目（stepfun-1/2/3：同一组模型、三把 key），用多账号摊平额度——给这几个条目加上相同的 `"pool"` 标记后，固定转发撞 429 还会自动换下一个账号、模型不变（见 providers.json 一节）：
 
 ```bash
 awerouter serve all               # 一个端口服务所有 profile 和已声明的模型
@@ -283,6 +283,8 @@ aweskill 通过管理skills，让 agent **管理**路由；aweswitch 让你**启
 这样 `awerouter serve all` 会额外暴露 `stepfun/step-3.7-flash`。它是固定转发，绕过自动路由；未声明的模型不会被接受。`models` 按协议分别声明，旧配置不需要修改。
 
 provider 还可以声明 `"multimodal": true`。它的唯一消费方是回退队列：带图请求永远不会回退到没声明多模态的 provider——图片护栏在故障转移期间同样成立，未声明即视为否（安全方向）。
+
+provider 还可以带一个 `"pool": "stepfun"` 标记。同一协议组内共享标记的条目就是同一家厂商的多个账号（同一组模型、不同的 key）：网关的 `provider/<model>` 固定转发撞 429 时，会换**同一个模型**的下一个池成员重试——按声明顺序从被点名的条目循环往后，每个账号的溢出流向下一个账号。每个条目一个标记，就取代了多账号场景下本要互相写一堆 backups 的做法；不打标记的条目保持锁定（点名的模型 429 就返回 429，绝不偷换——池只换谁来服务你点名的模型，不换模型本身）。冷却、`→fb:` 标签、`fallback_hops`、`multimodal` 图片护栏都与路由 profile 的回退完全一致；没声明该模型的成员不进队列，池内 `models` 集合不一致时 serve 启动会给出警告。
 
 支持三种协议。`base_url` 沿用各原生客户端的写法——从客户端配置里原样抄过来即可，awerouter 按原生客户端同样的规则拼接端点路径：
 
@@ -555,7 +557,7 @@ settings 的每个键也都可以**直接写在 profile 体内**，与 `protocol
 
 `longContextThreshold` 可以是整数，也可以写 `"auto"`：每次 `serve` 启动时，awerouter 取该 profile 自己最近 `windowDays` 天 L3 有效 token 分布的 `percentile` 分位值作为阈值。窗口内 L3 请求数不足 `minSamples`（新 profile、流量清淡）时改用 `fallbackThreshold`。四个参数都在 `settings.longContextAuto` 里，全部可选——横幅每次都会打印选了什么、依据是什么。注意：分位值决定的是 flash/pro 的*分配比例*，不代表 flash 的能力上限——如果你的 flash 模型在超长上下文上明显退化，请继续用固定阈值。
 
-> **回退队列（`backups`，配额感知）：** 每个 destination 键都可以声明一条有序回退队列——写法与 `destinations` 相同的 `"provider,model"` 字符串（单个字符串等价于单元素队列）。主选在**首个流式字节之前**返回 429/408/5xx 或网络错误时，请求按队列顺序换下一个候选；智能路由本身不变（档位是请求的属性——回退只换服务者，不换档位）。零配置时每个档位各有一条隐式跨档跳转——flash→pro 与 pro→flash，宁可降级也要给出答案，且每次跳转都大声音地写进 label。显式列表**替换**隐式跳转：你写的就 exactly 是运行的（想让 flash 队列末尾兜底到 pro，就自己写上）。429——或任何带 `Retry-After` 的响应——会让该候选进入进程内冷却（可解析的 Retry-After 优先，否则 30 秒；上限 60 秒），配额耗尽的窗口期内流量会粘在备选上，而不是每个请求都先白撞一次死配额；冷却是建议性的，重启即清零。队列耗尽时把最后一个上游响应原样透传，绝不吞掉；网络错误的 502 会点名每一个试过的候选。每一跳都盖进 label（`background→fb:glm,glm-4.7-flash`）并计入用量日志的 `fallback_hops`。带图请求的队列会按 provider 声明的 `multimodal` 标志过滤（见 providers.json）——图片护栏在回退期间同样成立；`provider/<model>` 固定转发保持锁定：点名的模型 429 就返回 429，绝不偷换。
+> **回退队列（`backups`，配额感知）：** 每个 destination 键都可以声明一条有序回退队列——写法与 `destinations` 相同的 `"provider,model"` 字符串（单个字符串等价于单元素队列）。主选在**首个流式字节之前**返回 429/408/5xx 或网络错误时，请求按队列顺序换下一个候选；智能路由本身不变（档位是请求的属性——回退只换服务者，不换档位）。零配置时每个档位各有一条隐式跨档跳转——flash→pro 与 pro→flash，宁可降级也要给出答案，且每次跳转都大声音地写进 label。显式列表**替换**隐式跳转：你写的就 exactly 是运行的（想让 flash 队列末尾兜底到 pro，就自己写上）。429——或任何带 `Retry-After` 的响应——会让该候选进入进程内冷却（可解析的 Retry-After 优先，否则 30 秒；上限 60 秒），配额耗尽的窗口期内流量会粘在备选上，而不是每个请求都先白撞一次死配额；冷却是建议性的，重启即清零。队列耗尽时把最后一个上游响应原样透传，绝不吞掉；网络错误的 502 会点名每一个试过的候选。每一跳都盖进 label（`background→fb:glm,glm-4.7-flash`）并计入用量日志的 `fallback_hops`。带图请求的队列会按 provider 声明的 `multimodal` 标志过滤（见 providers.json）——图片护栏在回退期间同样成立；`provider/<model>` 固定转发默认保持锁定（见 providers.json 的 `pool` 标记，多账号可换账号不换模型）：点名的模型 429 就返回 429，绝不偷换。
 
 密钥用 `${ENV_VAR}` 引用。缺失的环境变量在启动时报错退出。
 

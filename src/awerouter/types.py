@@ -22,6 +22,11 @@ class Provider:
     # requests are filtered on it). Default False: an undeclared provider is
     # never handed images during failover — the safe direction.
     multimodal: bool = False
+    # Account-pool tag: entries sharing it within one protocol group are the
+    # same vendor's accounts (same models, different keys). A gateway
+    # 'provider/<model>' forward fails over to fellow members — same model,
+    # declaration order wrapping from the named entry. Empty = pinned.
+    pool: str = ""
 
 
 @dataclass

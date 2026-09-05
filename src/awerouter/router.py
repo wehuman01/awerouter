@@ -62,6 +62,38 @@ def build_queue(dest_key: str, profile, feat: InspectResult,
     return tuple(queue)
 
 
+def build_direct_queue(dest: Destination, feat: InspectResult,
+                       providers: dict | None = None) -> tuple[Candidate, ...]:
+    """Expand a gateway 'provider/<model>' direct forward into its failover queue.
+
+    Unpooled stays pinned: a length-1 queue, so "never falls back" needs no
+    special case in the retry loop — the caller named this exact model, and
+    swapping it for another would not be what was asked for. A provider
+    'pool' tag opts in: fellow pool members carry the SAME model — the model
+    is the request's property, failover only swaps who serves it — in
+    providers.json declaration order wrapping around from the named entry,
+    so each account's overflow flows to the next account, never silently
+    back to a de-facto primary. A member that did not declare the model is
+    simply not a candidate (capability, not error).
+
+    The image guard holds on the tail exactly like build_queue: the named
+    primary stands (the caller chose it), candidates need 'multimodal'.
+    """
+    queue = [Candidate("direct", dest)]
+    pool = providers[dest.provider_name].pool if providers is not None else ""
+    if pool:
+        members = [n for n, p in providers.items() if p.pool == pool]
+        start = members.index(dest.provider_name)
+        for name in members[start + 1:] + members[:start]:
+            if dest.model in providers[name].models:
+                queue.append(Candidate("direct", Destination(name, dest.model)))
+    if feat.has_image and providers is not None:
+        queue = [queue[0]] + [
+            c for c in queue[1:] if providers[c.dest.provider_name].multimodal
+        ]
+    return tuple(queue)
+
+
 def resolve(
     model: str | None,
     feat: InspectResult,
