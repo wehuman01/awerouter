@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.6.1
+
+Robust resident service management: `serve restart` one-word reloads, crash-proof request handling, and macOS installs that actually stick.
 
 ### Fixed
 - A request-path failure no longer kills the daemon: a `die()` inside request handling (e.g. a `${VAR}` auth reference whose value is missing from the daemon's environment) used to raise SystemExit through the handler and take the whole process down — under KeepAlive, a crash loop. A guard middleware on both apps now answers that one request with 503 (message included) and keeps serving the next.
