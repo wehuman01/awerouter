@@ -44,9 +44,17 @@ def _launchd(tmp_path, monkeypatch):
 
 
 def _mock_launchctl(monkeypatch, calls):
+    state = {"bootstrapped": False}
+
     def fake_run(argv, **_kwargs):
         calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[1] == "bootstrap":
+            state["bootstrapped"] = True
+        # 'print' is the job-loaded check: the job counts as loaded only
+        # once a bootstrap has been issued (install's verify+retry path).
+        rc = 0 if (argv[1] != "print" or state["bootstrapped"]) else 1
+        return subprocess.CompletedProcess(argv, rc, "", "")
+
     monkeypatch.setattr(service, "_run", fake_run)
 
 
@@ -248,6 +256,73 @@ class TestInstall:
         assert "resident service for 'cc-1' failed to start" in r.output
         assert "already in use" in r.output
 
+    def test_bootstrap_race_retries_until_loaded(self, tmp_path, monkeypatch):
+        """bootout's teardown is asynchronous; a bootstrap racing it can exit 0
+        without ever submitting the job. install() must verify the job is
+        really loaded and retry, not trust bootstrap's return code."""
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        monkeypatch.setenv("SVC_KEY1", "v1")
+        monkeypatch.setenv("SVC_KEY2", "v2")
+        _launchd(tmp_path, monkeypatch)
+        bootstraps = {"n": 0}
+
+        def fake_run(argv, **_kwargs):
+            if argv[1] == "bootstrap":
+                bootstraps["n"] += 1
+            # 'print' is the loaded-check: the job only counts as loaded from
+            # the second bootstrap on.
+            loaded = argv[1] != "print" or bootstraps["n"] >= 2
+            return subprocess.CompletedProcess(argv, 0 if loaded else 1, "", "")
+
+        monkeypatch.setattr(service, "_run", fake_run)
+        service.install("cc-1", ["/usr/bin/python", "-m", "awerouter"],
+                        tmp_path / "serve.log", {})
+        assert bootstraps["n"] == 2  # retried once, verified loaded, stopped
+
+    def test_bootout_release_is_awaited_before_bootstrap(self, tmp_path, monkeypatch):
+        """Right after bootout returns, the old job can still be 'loaded'
+        (asynchronous teardown). install() must wait for the release instead
+        of skipping bootstrap — otherwise the fresh file never loads."""
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        monkeypatch.setenv("SVC_KEY1", "v1")
+        monkeypatch.setenv("SVC_KEY2", "v2")
+        _launchd(tmp_path, monkeypatch)
+        prints = {"n": 0}
+        bootstraps = []
+
+        def fake_run(argv, **_kwargs):
+            if argv[1] == "print":
+                prints["n"] += 1
+                # old job still visible for the first two checks, then
+                # released; loaded again once the fresh bootstrap lands.
+                rc = 0 if prints["n"] <= 2 or bootstraps else 1
+                return subprocess.CompletedProcess(argv, rc, "", "")
+            if argv[1] == "bootstrap":
+                bootstraps.append(prints["n"])  # at which check-count it ran
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(service, "_run", fake_run)
+        service.install("cc-1", ["/usr/bin/python", "-m", "awerouter"],
+                        tmp_path / "serve.log", {})
+        assert len(bootstraps) == 1      # exactly one bootstrap...
+        assert bootstraps[0] > 2         # ...and only after the release polls
+
+    def test_install_dies_when_the_job_never_loads(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        monkeypatch.setenv("SVC_KEY1", "v1")
+        monkeypatch.setenv("SVC_KEY2", "v2")
+        _launchd(tmp_path, monkeypatch)
+        monkeypatch.setattr(service, "_LOAD_RETRY_S", 0.2)  # fail fast in tests
+
+        def fake_run(argv, **_kwargs):
+            rc = 1 if argv[1] == "print" else 0  # nothing ever loads
+            return subprocess.CompletedProcess(argv, rc, "", "bootstrap failed: 5")
+
+        monkeypatch.setattr(service, "_run", fake_run)
+        with pytest.raises(SystemExit, match=r"launchctl failed to load"):
+            service.install("cc-1", ["/usr/bin/python", "-m", "awerouter"],
+                            tmp_path / "serve.log", {})
+
 
 @pytest.mark.skipif(os.name == "nt", reason="awerouter stop is POSIX-only")
 class TestStopResident:
@@ -404,3 +479,115 @@ class TestRuntimeServiceSplit:
         assert inst["service"] == "launchd"
         runtime.unregister()
         monkeypatch.delenv("AWEROUTER_SERVICE", raising=False)
+
+
+class TestReadCmd:
+    def test_read_cmd_launchd_round_trip(self, tmp_path, monkeypatch):
+        agents = _launchd(tmp_path, monkeypatch)
+        agents.mkdir(parents=True)
+        cmd = ["/usr/bin/python", "-m", "awerouter", "__serve_daemon__", "cc-1",
+               "--host", "127.0.0.1", "--port", "3000"]
+        with open(agents / "com.awerouter.serve.cc-1.plist", "wb") as handle:
+            plistlib.dump(service.build_plist(
+                "com.awerouter.serve.cc-1", cmd, tmp_path / "serve.log", {}), handle)
+        assert service.read_cmd("cc-1") == cmd
+        assert service.read_cmd("other") is None  # nothing installed under that name
+
+    def test_split_systemd_exec_inverts_build_unit(self):
+        cmd = ["/usr/bin/python", "-m", "awerouter", "__serve_daemon__",
+               "cc router", "--host", "127.0.0.1"]
+        line = "ExecStart=" + " ".join(service._systemd_quote(t) for t in cmd)
+        assert service._split_systemd_exec(line[len("ExecStart="):]) == cmd
+        # a percent-encoded proxy password survives the round trip too
+        tricky = ["--proxy", "http://u:p%40ss@127.0.0.1:7890"]
+        quoted = " ".join(service._systemd_quote(t) for t in tricky)
+        assert service._split_systemd_exec(quoted) == tricky
+
+
+@pytest.mark.skipif(os.name == "nt", reason="awerouter restart is POSIX-only")
+class TestRestart:
+    def _seed_plist(self, tmp_path, monkeypatch, env=None):
+        """An installed resident service for cc-1 on port 3000 with baked env."""
+        agents = _launchd(tmp_path, monkeypatch)
+        agents.mkdir(parents=True, exist_ok=True)
+        cmd = ["/usr/bin/python", "-m", "awerouter", "__serve_daemon__", "cc-1",
+               "--host", "127.0.0.1", "--port", "3000"]
+        with open(agents / "com.awerouter.serve.cc-1.plist", "wb") as handle:
+            plistlib.dump(service.build_plist(
+                "com.awerouter.serve.cc-1", cmd,
+                tmp_path / "state" / "serve-cc-1.log",
+                dict(env or {"SVC_KEY1": "old-secret"})), handle)
+        return agents
+
+    def test_resident_restart_rebakes_env_keeps_cmd(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
+        agents = self._seed_plist(tmp_path, monkeypatch)
+        monkeypatch.setenv("SVC_KEY1", "fresh-secret")  # the changed secret
+        monkeypatch.setenv("SVC_KEY2", "v2")
+        calls = []
+        _mock_launchctl(monkeypatch, calls)
+        _register_soon(monkeypatch, _svc_instance(port=3000))
+        r = CliRunner().invoke(cli, ["serve", "restart", "cc-1"])
+        assert r.exit_code == 0, r.output
+        assert ("restarting cc-1 as a resident service "
+                "(env re-baked from this shell)") in r.output
+        with open(agents / "com.awerouter.serve.cc-1.plist", "rb") as handle:
+            data = plistlib.load(handle)
+        assert data["EnvironmentVariables"]["SVC_KEY1"] == "fresh-secret"
+        args = data["ProgramArguments"]
+        assert args[args.index("--port") + 1] == "3000"  # same port as installed
+        assert any("bootout" in argv for argv in calls)
+        assert any("bootstrap" in argv for argv in calls)
+
+    def test_installed_but_stopped_service_restarts(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch, _providers(), _routing())
+        monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
+        self._seed_plist(tmp_path, monkeypatch)
+        monkeypatch.setenv("SVC_KEY1", "v1")
+        monkeypatch.setenv("SVC_KEY2", "v2")
+        calls = []
+        _mock_launchctl(monkeypatch, calls)
+        _register_soon(monkeypatch, _svc_instance(port=3000))
+        r = CliRunner().invoke(cli, ["serve", "restart", "cc-1"])
+        assert r.exit_code == 0, r.output
+        assert any("bootstrap" in argv for argv in calls)  # started, not just touched
+
+    def test_background_restart_stops_and_respawns_same_port(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch)
+        monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
+        _launchd(tmp_path, monkeypatch)  # no installed service -> plain -d path
+        _seed_instance(os.getpid(), port=20128, background=True, svc="")
+        stopped = []
+        monkeypatch.setattr(runtime, "stop_instances",
+                            lambda profile=None, services=False:
+                            stopped.append(profile) or [])
+        spawned = []
+        monkeypatch.setattr("awerouter.cli._start_background",
+                            lambda name, port, host: spawned.append((name, port, host)))
+        r = CliRunner().invoke(cli, ["serve", "restart", "cc-1"])
+        assert r.exit_code == 0, r.output
+        assert stopped == ["cc-1"]
+        assert spawned == [("cc-1", 20128, "127.0.0.1")]
+        assert "restarting cc-1 in the background (same port 20128)" in r.output
+
+    def test_foreground_instance_is_skipped(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch)
+        monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
+        _launchd(tmp_path, monkeypatch)
+        _seed_instance(os.getpid(), background=False, svc="")
+        spawned = []
+        monkeypatch.setattr("awerouter.cli._start_background",
+                            lambda name, port, host: spawned.append((name, port, host)))
+        r = CliRunner().invoke(cli, ["serve", "restart", "cc-1"])
+        assert r.exit_code == 0, r.output
+        assert spawned == []
+        assert "is a foreground instance — restart it in its own terminal" in r.output
+
+    def test_nothing_to_restart(self, tmp_path, monkeypatch):
+        _setup(tmp_path, monkeypatch)
+        monkeypatch.setenv("AWEROUTER_LOG_DIR", str(tmp_path / "state"))
+        _launchd(tmp_path, monkeypatch)
+        r = CliRunner().invoke(cli, ["serve", "restart", "cc-1"])
+        assert r.exit_code == 0, r.output
+        assert "(nothing to restart" in r.output

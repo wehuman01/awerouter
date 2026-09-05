@@ -95,7 +95,7 @@ class ServeGroup(ProfileGroup):
 @cli.group(cls=ServeGroup, invoke_without_command=True,
            context_settings={"help_option_names": ["-h", "--help"]})
 def serve():
-    """Start and manage the awerouter daemon (run / status / stop).
+    """Start and manage the awerouter daemon (run / status / stop / restart).
 
     Bare `awerouter serve` keeps its old meaning: auto-select the profile and
     run in the foreground. Options like -d belong to `serve run`.
@@ -263,33 +263,10 @@ def _log_tail(log: Path, lines: int = 15) -> str:
         return ""
 
 
-def _install_background(profile, port, host: str, gateway: bool = False) -> None:
-    """`serve run/all --install`: resident service via launchd/systemd.
-
-    The service replaces any running instance of the same target first (one
-    port, one owner), then installs the job and waits for its registration —
-    same contract as `-d` plus start-at-login and crash relaunch."""
-    if os.name == "nt":
-        die("--install is not supported on Windows (POSIX only)")
-    # Fail fast on a broken config / missing ${VAR} before writing anything.
-    if gateway:
-        _load_gateway_state()
-        prof_name = GATEWAY_PROFILE_NAME
-        provider_refs = [(group, name) for group, provs in load_providers().items()
-                         for name in provs]
-        cmd = [sys.executable, "-m", "awerouter", "__serve_gateway_daemon__", "--host", host]
-    else:
-        if profile:
-            _, prof, _ = load_for_profile(profile)
-        else:
-            _, prof, _ = load_default_profile()
-        prof_name = prof.name
-        provider_refs = [(group, dest.provider_name) for group in prof.protocols
-                         for dest in prof.destinations.values()]
-        cmd = [sys.executable, "-m", "awerouter", "__serve_daemon__", prof_name,
-               "--host", host]
-    if port is not None:
-        cmd += ["--port", str(port)]
+def _install_service(prof_name: str, provider_refs: list, cmd: list) -> None:
+    """Install core shared by `--install` and `serve restart`: stop the
+    target's old instances, write the service file with freshly collected
+    env, start it, wait for its registration."""
     service.require_env(provider_refs)
     environment = service.collect_env()
     # The service owns the target now: stop plain instances (same-port conflict)
@@ -317,6 +294,36 @@ def _install_background(profile, port, host: str, gateway: bool = False) -> None
               "(re-run --install after changing them)")
     print(f"  manage    -> awerouter serve status | awerouter serve stop {prof_name} "
           f"(stops until next login) | awerouter serve stop {prof_name} --purge (removes)")
+
+
+def _install_background(profile, port, host: str, gateway: bool = False) -> None:
+    """`serve run/all --install`: resident service via launchd/systemd.
+
+    The service replaces any running instance of the same target first (one
+    port, one owner), then installs the job and waits for its registration —
+    same contract as `-d` plus start-at-login and crash relaunch."""
+    if os.name == "nt":
+        die("--install is not supported on Windows (POSIX only)")
+    # Fail fast on a broken config / missing ${VAR} before writing anything.
+    if gateway:
+        _load_gateway_state()
+        prof_name = GATEWAY_PROFILE_NAME
+        provider_refs = [(group, name) for group, provs in load_providers().items()
+                         for name in provs]
+        cmd = [sys.executable, "-m", "awerouter", "__serve_gateway_daemon__", "--host", host]
+    else:
+        if profile:
+            _, prof, _ = load_for_profile(profile)
+        else:
+            _, prof, _ = load_default_profile()
+        prof_name = prof.name
+        provider_refs = [(group, dest.provider_name) for group in prof.protocols
+                         for dest in prof.destinations.values()]
+        cmd = [sys.executable, "-m", "awerouter", "__serve_daemon__", prof_name,
+               "--host", host]
+    if port is not None:
+        cmd += ["--port", str(port)]
+    _install_service(prof_name, provider_refs, cmd)
 
 
 @click.command("__serve_daemon__", hidden=True)
@@ -449,6 +456,70 @@ def stop_cmd(profile, purge):
             click.echo("(nothing to stop)")
     if purge and not purged and not svc_stopped:
         click.echo("(no resident service installed)")
+
+
+def _restart_resident(name: str) -> None:
+    """Re-install the resident service for name: same command line, port and
+    host as before, env re-baked from the current shell (new secrets apply)."""
+    cmd = service.read_cmd(name)
+    if not cmd:
+        die(
+            f"no daemon command line found in the installed service for '{name}'\n"
+            f"fix: remove it (awerouter serve stop {name} --purge) and re-run "
+            f"awerouter serve run {name} --install"
+        )
+    if name == GATEWAY_PROFILE_NAME:
+        _load_gateway_state()
+        provider_refs = [(group, prov) for group, provs in load_providers().items()
+                         for prov in provs]
+    else:
+        _, prof, _ = load_for_profile(name)
+        provider_refs = [(group, dest.provider_name) for group in prof.protocols
+                         for dest in prof.destinations.values()]
+    click.echo(f"restarting {name} as a resident service (env re-baked from this shell)")
+    _install_service(name, provider_refs, cmd)
+
+
+@serve.command("restart")
+@click.argument("profile", required=False)
+def restart_cmd(profile):
+    """Restart serve instances (all of them, or PROFILE's only).
+
+    The way to apply a changed environment variable or secret: resident
+    services are re-installed from the current shell (same command line, port
+    and host, env baked fresh); background instances are stopped and
+    re-spawned from the current shell; foreground instances belong to their
+    own terminal and are skipped."""
+    if os.name == "nt":
+        die("restart is not supported on Windows (POSIX only)")
+    instances = runtime.list_instances()
+    svc_names = {s["name"] for s in service.installed_services()}
+    names = {i["profile"] for i in instances} | svc_names
+    if profile is not None:
+        names = {n for n in names if n == profile}
+    if not names:
+        if profile:
+            click.echo(f"(nothing to restart — no running instance or resident "
+                       f"service for profile '{profile}')")
+        else:
+            click.echo("(nothing to restart)")
+        return
+    for name in sorted(names):
+        if name in svc_names:
+            _restart_resident(name)
+            continue
+        insts = [i for i in instances if i["profile"] == name]
+        bg = [i for i in insts if i.get("background")]
+        if bg:
+            runtime.stop_instances(name, services=False)
+            click.echo(f"restarting {name} in the background "
+                       f"(same port {bg[0]['port']})")
+            _start_background(name, bg[0]["port"], bg[0].get("host", "127.0.0.1"))
+        for inst in (i for i in insts if not i.get("background")):
+            click.echo(
+                f"note: {name} (pid {inst['pid']}) is a foreground instance — "
+                "restart it in its own terminal (Ctrl-C, then serve run)"
+            )
 
 
 _NEW_PROVIDER = "<new>"

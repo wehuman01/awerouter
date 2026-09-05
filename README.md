@@ -639,9 +639,12 @@ Every serve instance — foreground or background — registers itself under `~/
 ```bash
 awerouter serve status           # profile, fg/bg/svc, pid, host:port, protocol, uptime
 awerouter serve stop [PROFILE]   # SIGTERM all instances, or one profile's (graceful shutdown)
+awerouter serve restart [PROFILE]  # apply changed env/secrets: re-install / re-spawn from this shell
 ```
 
-Resident instances show as `svc:launchd` / `svc:systemd`. `serve stop` stops them through the service manager (a plain SIGTERM would be instantly undone by the restart policy) — they return at the next login; `awerouter serve stop [PROFILE] --purge` also removes the service file so they never start again. An installed-but-stopped service is listed by `serve status`. Registration files are keyed by pid; entries whose process no longer exists are pruned automatically, and `serve stop` refuses to signal a pid whose command line no longer looks like awerouter (a reused pid after an unclean kill). `-d`/`--install`/`serve stop` are POSIX-only.
+Resident instances show as `svc:launchd` / `svc:systemd`. `serve stop` stops them through the service manager (a plain SIGTERM would be instantly undone by the restart policy) — they return at the next login; `awerouter serve stop [PROFILE] --purge` also removes the service file so they never start again. An installed-but-stopped service is listed by `serve status`. Registration files are keyed by pid; entries whose process no longer exists are pruned automatically, and `serve stop` refuses to signal a pid whose command line no longer looks like awerouter (a reused pid after an unclean kill). `-d`/`--install`/`serve stop`/`serve restart` are POSIX-only.
+
+`serve restart` is the way to apply a changed environment variable or secret the daemon was started with: a resident service is re-installed from the current shell (same command line, port and host as installed, env baked fresh — this also starts an installed-but-stopped service), a plain background instance is stopped and re-spawned from the current shell on the same port, and foreground instances are skipped (they belong to their own terminal). Config-file edits never need it — see hot reload below.
 
 Serve also watches `routing.json` and `providers.json` (1s mtime poll) and hot-reloads changes: destinations, thresholds, tool routing, settings overrides, provider entries — even switching the profile's providers — apply to the next request without a restart. A file that fails to load (mid-save partial write, broken JSON) is announced once and the previous config keeps serving until the file parses again; the one thing a reload cannot do is rebind the listen port — change the `port` field and serve prints a restart hint instead.
 

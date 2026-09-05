@@ -1041,10 +1041,30 @@ def _flat_providers(providers_by_protocol: dict) -> dict:
     return {p.name: p for group in providers_by_protocol.values() for p in group.values()}
 
 
+@web.middleware
+async def _daemon_guard(request: web.Request, handler) -> web.StreamResponse:
+    """Keep the daemon alive when a request path calls die() (SystemExit) —
+    e.g. a ${VAR} auth reference whose value is missing from the daemon's
+    environment. One failing request must not take the listener down with it
+    (under KeepAlive a request-triggered die() becomes a crash loop): answer
+    503 with the message; the next request is unaffected."""
+    try:
+        return await handler(request)
+    except SystemExit as exc:
+        message = str(exc).removeprefix("awerouter: ").strip()
+        if not message or message.isdigit():
+            message = "request failed (awerouter internal error)"
+        print(f"daemon kept alive ({request.path}): {message}", flush=True)
+        return web.json_response(
+            {"error": {"type": "awerouter_error", "message": message}},
+            status=503,
+        )
+
+
 def create_app(providers: dict, profile, settings) -> web.Application:
     """providers is the profile's groups keyed by served protocol
     ({protocol: {provider_name: Provider}}); each handler picks its own group."""
-    app = web.Application()
+    app = web.Application(middlewares=[_daemon_guard])
     app["providers"] = providers
     app["profile"] = profile
     app["settings"] = settings
@@ -1081,7 +1101,7 @@ def create_gateway_app(entries: dict[str, _GatewayEntry],
     """Gateway app: every profile on one port. The request's model name picks
     the profile ('<profile>/auto|flash|pro'); bare names go to default_profile
     (see _gateway_select). Routes are identical to the single-profile app."""
-    app = web.Application()
+    app = web.Application(middlewares=[_daemon_guard])
     app["gateway"] = entries
     app["default_profile"] = default_profile
     if providers_all:

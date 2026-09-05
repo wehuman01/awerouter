@@ -206,12 +206,14 @@ awerouter serve run <profile> --install   # install launchd/systemd service and 
 awerouter serve status                    # shows svc:launchd or svc:systemd for resident instances
 awerouter serve stop <profile>            # stops the running instance (returns at next login)
 awerouter serve stop <profile> --purge    # stops and removes the service (no more auto-start)
+awerouter serve restart <profile>         # re-install/re-spawn from this shell (applies changed secrets)
 awerouter serve all --install             # gateway mode resident service
 ```
 
 Notes:
 - `--install` implies background mode. Re-running it updates host/port/env and restarts the service.
 - The service manager starts the daemon without your shell environment. awerouter bakes `${VAR}` values referenced by `providers.json` (plus `AWEROUTER_*` and proxy vars) into the service file (mode 0600). If a variable the target needs is unset, install fails up front; set it, reload the shell, and re-run `--install`.
+- `serve restart` is how a changed secret/env var gets applied: a resident service is re-installed from the current shell (same command line, port and host, env baked fresh; an installed-but-stopped service starts too), a plain `-d` instance is stopped and re-spawned from the current shell. Config-file edits hot-reload and never need it. The user runs it in their own terminal.
 - `serve stop` routes resident instances through the service manager (plain SIGTERM would be instantly undone by the restart policy). `--purge` removes the service file; without it, the instance comes back at the next login.
 - These commands are POSIX-only.
 

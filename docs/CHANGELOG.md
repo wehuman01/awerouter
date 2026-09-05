@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- A request-path failure no longer kills the daemon: a `die()` inside request handling (e.g. a `${VAR}` auth reference whose value is missing from the daemon's environment) used to raise SystemExit through the handler and take the whole process down — under KeepAlive, a crash loop. A guard middleware on both apps now answers that one request with 503 (message included) and keeps serving the next.
+- Resident installs on macOS no longer intermittently end up "installed — not running": `launchctl bootout` tears down asynchronously, and right after it returns the old job can still read as loaded while a racing bootstrap is silently never submitted. install() now waits for the domain to actually release the old job, then bootstraps and verifies the job really loaded (retrying within 5s before dying loudly). `serve restart` hit this ~half the time before.
+
+### Added
+- `awerouter serve restart [PROFILE]`: the one-word way to apply a changed environment variable or secret. Resident services are re-installed from the current shell — same command line, port and host as installed, env baked fresh — and an installed-but-stopped service is started too. Plain background instances are stopped and re-spawned from the current shell on the same port; foreground instances are skipped (they belong to their terminal).
+
 ## v0.6.0
 
 Failover becomes first-class: routing destinations gain ordered `backups` queues with quota-aware cooldowns, providers declare a `multimodal` flag so the image guard survives failover, and gateway direct-forwards support a `pool` tag for same-model account rotation.

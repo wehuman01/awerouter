@@ -34,6 +34,10 @@ from awerouter.server import GATEWAY_PROFILE_NAME
 
 LABEL_PREFIX = "com.awerouter.serve."
 
+# How long install() keeps retrying bootstrap after a bootout before dying
+# (bootout teardown is asynchronous; a racing bootstrap can need a beat).
+_LOAD_RETRY_S = 5.0
+
 # Proxy variables the codex/claude subscription logins honor; launchd and the
 # systemd user manager inherit none of them, so set ones are baked too.
 _PROXY_VARS = ("http_proxy", "https_proxy", "all_proxy", "no_proxy",
@@ -217,6 +221,12 @@ def _bootout(slug: str) -> None:
     _run(["launchctl", "bootout", f"gui/{os.getuid()}/{_label(slug)}"])
 
 
+def _job_loaded(slug: str) -> bool:
+    """Whether the job is currently submitted to the gui domain (print exits
+    0 only for a loaded job)."""
+    return _run(["launchctl", "print", f"gui/{os.getuid()}/{_label(slug)}"]).returncode == 0
+
+
 def install(name: str, cmd: list, log: Path, environment: dict) -> Path:
     """Write the service file and start it now. Returns the file path.
 
@@ -232,17 +242,40 @@ def install(name: str, cmd: list, log: Path, environment: dict) -> Path:
         with open(path, "wb") as handle:
             plistlib.dump(build_plist(_label(slug), cmd, log, env), handle)
         os.chmod(path, 0o600)  # baked values include secrets
-        _bootout(slug)  # a stale loaded registration breaks bootstrap
-        boot = _run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)])
-        if boot.returncode != 0:
-            legacy = _run(["launchctl", "load", str(path)])
-            if legacy.returncode != 0:
+        # A stale loaded registration breaks bootstrap — and bootout's
+        # teardown is asynchronous: right after bootout returns, the job can
+        # still be loaded (its process terminating), and a bootstrap racing
+        # that state silently never submits the fresh file. So: wait for the
+        # domain to actually release the job, then bootstrap and verify the
+        # job really loaded, retrying within the deadline before dying.
+        _bootout(slug)
+        deadline = time.monotonic() + _LOAD_RETRY_S
+        while _job_loaded(slug):
+            if time.monotonic() > deadline:
                 die(
-                    f"launchctl failed to load {path}\n"
-                    f"{(boot.stderr or legacy.stderr or '').strip()}\n"
-                    "fix: resolve the launchctl error, or load manually: "
-                    "launchctl load " + str(path)
+                    f"launchctl did not release the old job for '{name}' within "
+                    f"{_LOAD_RETRY_S:.0f}s (bootout {path})\n"
+                    "fix: check for a stuck process: "
+                    f"launchctl print gui/{os.getuid()}/{_label(slug)}, then re-run"
                 )
+            time.sleep(0.1)
+        boot = legacy = None
+        deadline = time.monotonic() + _LOAD_RETRY_S
+        while not _job_loaded(slug):
+            boot = _run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)])
+            if _job_loaded(slug):
+                break
+            if time.monotonic() > deadline:
+                legacy = _run(["launchctl", "load", str(path)])
+                if not _job_loaded(slug):
+                    die(
+                        f"launchctl failed to load {path}\n"
+                        f"{(boot.stderr or legacy.stderr or '').strip()}\n"
+                        "fix: resolve the launchctl error, or load manually: "
+                        "launchctl load " + str(path)
+                    )
+                break
+            time.sleep(0.5)
         return path
     if shutil.which("systemctl") is None:
         die(
@@ -323,6 +356,71 @@ def _name_from_cmd(args: list) -> "str | None":
         if i + 1 < len(args):
             return str(args[i + 1])
     return None
+
+
+def read_cmd(name: str) -> "list | None":
+    """Daemon command line of the installed service for name (None if none).
+
+    Lets `serve restart` re-install with the same command/port/host while
+    re-baking env from the current shell. Only files awerouter itself wrote are
+    parsed, and only the quoting build_unit() emits needs to be reversible."""
+    kind = service_kind()
+    if kind is None:
+        return None
+    slug = service_slug(name)
+    if kind == "launchd":
+        path = plist_path(slug)
+        if not path.exists():
+            return None
+        try:
+            with open(path, "rb") as handle:
+                return list(plistlib.load(handle).get("ProgramArguments") or [])
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            return None
+    path = unit_path(slug)
+    if not path.exists():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r"^ExecStart=(.*)$", text, re.MULTILINE)
+    return _split_systemd_exec(match.group(1)) if match else None
+
+
+def _split_systemd_exec(line: str) -> list:
+    """Tokenize one ExecStart line back into an argv (inverse of build_unit's
+    quoting: "..." quoting, \\ and \" escapes, %% for a literal %)."""
+    out, token, quoted = [], [], False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quoted:
+            if ch == "\\" and i + 1 < len(line) and line[i + 1] in ('\\', '"'):
+                token.append(line[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                quoted = False
+                i += 1
+                continue
+            token.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            quoted = True
+        elif ch.isspace():
+            if token:
+                out.append("".join(token))
+                token = []
+            i += 1
+            continue
+        else:
+            token.append(ch)
+        i += 1
+    if token:
+        out.append("".join(token))
+    return [t.replace("%%", "%") for t in out]
 
 
 def installed_services() -> list:

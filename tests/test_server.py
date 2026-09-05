@@ -99,6 +99,45 @@ class TestAwerouter:
                 assert "pro" in ids
         run(t())
 
+    def test_missing_auth_env_returns_503_and_keeps_serving(self, monkeypatch):
+        """A ${VAR} with no value used to SystemExit inside the request path,
+        killing the whole daemon (a KeepAlive crash loop under launchd). The
+        daemon guard middleware must turn it into a 503 for that one request
+        and keep serving the next."""
+        monkeypatch.delenv("MISSING_KEY_TEST", raising=False)
+        async def t():
+            providers = _providers(0)
+            providers["anthropic"]["stepfun"] = Provider(
+                "stepfun", "http://127.0.0.1:1", "${MISSING_KEY_TEST}")
+
+            async def up(request):
+                return web.json_response({"model": "pro"})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                providers["anthropic"]["anthropic"] = Provider(
+                    "anthropic", f"http://127.0.0.1:{up_server.port}",
+                    "${ANTHROPIC_KEY}", "x-api-key")
+                app = create_app(providers, ROUTING, SETTINGS)
+                async with TestClient(TestServer(app)) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "flash", "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 503
+                    d = await r.json()
+                    assert "MISSING_KEY_TEST" in d["error"]["message"]
+                    # the daemon survived: the next request is served fine
+                    r2 = await c.post("/v1/messages", json={
+                        "model": "pro", "messages": [{"content": "hi"}],
+                    })
+                    assert r2.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+
     def test_flash_route(self):
         async def t():
             async def up(request):
