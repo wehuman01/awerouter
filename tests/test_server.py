@@ -5,6 +5,7 @@ import json
 import os
 import re
 import socket
+import time
 
 import pytest
 from aiohttp import web
@@ -909,6 +910,48 @@ class TestCodexAccount:
         e = tail(1)[0]
         assert e.provider == "deepseek" and e.label.endswith("→fb:deepseek,deepseek-chat")
         assert e.codex_retried is True and e.fallback_hops == 1
+
+    def test_rejected_login_stays_excluded_after_intermediate_failure(self):
+        """codex 401x2 -> keyed backup 503 -> the queue's other codex entry
+        must NOT be retried: the login was already proven dead on this
+        request, so the backup's 503 surfaces instead of another doomed 401."""
+        calls = []
+
+        async def t():
+            async def up(request):
+                calls.append(request.headers.get("authorization", ""))
+                if "chatgpt-account-id" in request.headers:  # codex login
+                    return web.json_response(
+                        {"error": {"message": "invalid token"}}, status=401)
+                return web.json_response({"error": "boom"}, status=503)
+
+            up_app = web.Application()
+            up_app.router.add_post("/responses", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                self._login("tok-stale", "acct-1")
+                providers = {"openai-responses": {
+                    "codex": Provider("codex", f"http://127.0.0.1:{up_server.port}", "codex"),
+                    "deepseek": Provider("deepseek", f"http://127.0.0.1:{up_server.port}", "sk-x"),
+                    "codex2": Provider("codex2", f"http://127.0.0.1:{up_server.port}", "codex"),
+                }}
+                profile = RoutingProfile("cx", "openai-responses", 32, {
+                    "flash": Destination("codex", "gpt-5.6-luna"),
+                    "pro": Destination("deepseek", "deepseek-chat"),
+                }, backups={"flash": [Destination("deepseek", "deepseek-chat"),
+                                      Destination("codex2", "gpt-5.6-luna")]})
+                async with TestClient(TestServer(create_app(providers, profile, SETTINGS))) as c:
+                    r = await c.post("/v1/responses", json={
+                        "model": "auto",
+                        "input": [{"role": "user", "content": "hi"}],
+                    })
+                    assert r.status == 503
+            finally:
+                await up_server.close()
+        run(t())
+        # codex 401, re-read retry 401, deepseek 503 — codex2 never contacted
+        assert len(calls) == 3
 
     def test_second_401_surfaces_to_client(self):
         """Both destinations ride the same codex login: a fallback would just
@@ -2001,6 +2044,52 @@ class TestFailoverQueues:
         e = tail(1)[0]
         assert e.label == "think→fb:stepfun,step-3.5-flash"
         assert e.destination == "flash" and e.fallback_hops == 1
+
+    def test_all_cooling_probes_primary_anyway(self):
+        """Every candidate cooling: the skip is advisory — the primary is
+        probed anyway, never walked to the queue's end to die on the last
+        candidate."""
+        hits = []
+
+        async def t():
+            async def up(request):
+                body = await request.json()
+                hits.append(body["model"])
+                return web.json_response({"model": body["model"]})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                app = create_app(_providers_multi(up_server.port), self._profile({
+                    "flash": [Destination("glm", "glm-4.7-flash")],
+                }), SETTINGS)
+                from awerouter import server
+                now = time.monotonic()
+                for key in (("anthropic", "stepfun", "step-3.5-flash"),
+                            ("anthropic", "glm", "glm-4.7-flash"),
+                            ("anthropic", "anthropic", "claude-opus-5")):
+                    server._COOLDOWN_UNTIL[key] = now + 60
+                async with TestClient(TestServer(app)) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "flash", "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        assert hits == ["step-3.5-flash"]   # primary probed, served — no walk
+
+    def test_cooldown_keyed_by_protocol(self):
+        """A quota rejection scopes to the protocol group it happened in: the
+        same provider name under another group is a different account with
+        different health."""
+        from awerouter import server
+        dest = Destination("a", "m")
+        server._COOLDOWN_UNTIL[("anthropic", "a", "m")] = time.monotonic() + 60
+        assert server._cooling(dest, "anthropic") is True
+        assert server._cooling(dest, "openai-chat") is False
 
     def test_429_cooldown_skips_candidate_on_next_request(self):
         """Retry-After starts a cooldown: the next request skips the cooling

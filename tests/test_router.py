@@ -911,6 +911,19 @@ class TestBuildQueue:
             ("flash", "stepfun", "step-3.5-flash"),
         ]
 
+    def test_implicit_hop_skipped_when_tiers_identical(self):
+        """flash and pro naming the same provider+model: the implicit hop
+        would only re-send the request to the endpoint that just failed it —
+        the queue stays pinned to the primary."""
+        p = RoutingProfile(
+            name="q", protocols="anthropic", long_context_threshold=32,
+            destinations={"flash": Destination("glm", "glm-5.3"),
+                          "pro": Destination("glm", "glm-5.3")})
+        assert self._names(build_queue("pro", p, self._feat())) == [
+            ("pro", "glm", "glm-5.3")]
+        assert self._names(build_queue("flash", p, self._feat())) == [
+            ("flash", "glm", "glm-5.3")]
+
     def test_explicit_backups_replace_the_implicit_hop(self):
         p = self._profile(backups={"flash": [Destination("glm", "glm-4.7-flash")]})
         assert [c.dest.model for c in build_queue("flash", p, self._feat())] == [

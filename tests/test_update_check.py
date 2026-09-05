@@ -90,6 +90,23 @@ class TestCheck:
         monkeypatch.setattr(update_check, "get_pypi_latest", lambda: __version__)
         assert update_check._check() is None
 
+    def test_failed_fetch_still_records_check(self, tmp_path, monkeypatch):
+        """An offline machine must not pay the urlopen timeout on every
+        command forever: a failed check still counts as checked, and the
+        last known latestVersion survives for the serve-banner hint."""
+        _config(tmp_path, monkeypatch)
+        (tmp_path / "update-check.json").write_text(json.dumps({
+            "lastChecked": 0, "latestVersion": "0.0.1", "lastReminded": 0}))
+
+        def offline():
+            raise OSError("network down")
+
+        monkeypatch.setattr(update_check, "get_pypi_latest", offline)
+        assert update_check._check() is None
+        cache = json.loads((tmp_path / "update-check.json").read_text())
+        assert cache["lastChecked"] > 0
+        assert cache["latestVersion"] == "0.0.1"
+
     def test_fresh_cache_avoids_network(self, tmp_path, monkeypatch):
         _config(tmp_path, monkeypatch)
         now = time.time()

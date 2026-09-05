@@ -14,6 +14,7 @@ from awerouter.rtk.constants import (
     FIND_PER_DIR_MAX,
     FIND_TOTAL_DIR_MAX,
     GIT_DIFF_HUNK_MAX_LINES,
+    GIT_DIFF_MAX_LINES,
     GIT_LOG_MAX_LINES,
     GREP_PER_FILE_MAX,
     LS_EXT_SUMMARY_TOP,
@@ -34,7 +35,7 @@ from awerouter.rtk.constants import (
 # git-diff — port of Rust git::compact_diff (src/cmds/git/git.rs L325-413)
 # ---------------------------------------------------------------------------
 
-def git_diff(diff: str, max_lines: int = 500) -> str:
+def git_diff(diff: str, max_lines: int = GIT_DIFF_MAX_LINES) -> str:
     result: list[str] = []
     current_file = ""
     added = 0
@@ -43,6 +44,7 @@ def git_diff(diff: str, max_lines: int = 500) -> str:
     hunk_shown = 0
     hunk_skipped = 0
     was_truncated = False
+    files_out = 0   # file headers embed a newline: each is two output lines
 
     for line in diff.split("\n"):
         if line.startswith("diff --git"):
@@ -55,6 +57,7 @@ def git_diff(diff: str, max_lines: int = 500) -> str:
             parts = line.split(" b/")
             current_file = " b/".join(parts[1:]) if len(parts) > 1 else "unknown"
             result.append(f"\n{current_file}")
+            files_out += 1
             added = 0
             removed = 0
             in_hunk = False
@@ -88,7 +91,10 @@ def git_diff(diff: str, max_lines: int = 500) -> str:
                     result.append(f"  {line}")
                     hunk_shown += 1
 
-        if len(result) >= max_lines:
+        # Cap by real output LINES (headers embed newlines), not elements —
+        # the smart-truncate fallback on the next pass measures lines, and
+        # the cap exists precisely to stay below its threshold.
+        if len(result) + files_out >= max_lines:
             result.append("\n... (more changes truncated)")
             was_truncated = True
             break
@@ -126,6 +132,7 @@ def git_status(input: str) -> str:
     modified_files: list[str] = []
     untracked_files: list[str] = []
     staged = modified = untracked = conflicts = 0
+    untracked_section = False   # long-form: inside the "Untracked files:" block
 
     for raw in lines:
         if not raw.strip():
@@ -154,6 +161,22 @@ def git_status(input: str) -> str:
             if y in ("M", "D"):
                 modified += 1
                 modified_files.append(file)
+            continue
+
+        # Long-form "Untracked files:" section: bare indented paths, no
+        # "kind:" prefix for _STATUS_LONG_RE to match. Porcelain input has no
+        # section header, so this branch never fires there.
+        if untracked_section:
+            s = raw.strip()
+            if s.startswith("("):
+                continue          # "(use \"git add <file>...\" to include)"
+            if raw[0] in " \t":
+                untracked += 1
+                untracked_files.append(s)
+                continue
+            untracked_section = False   # any unindented line ends the section
+        if raw == "Untracked files:":
+            untracked_section = True
             continue
 
         m = _STATUS_LONG_RE.match(raw)  # "modified:   path", "new file:   path", ...

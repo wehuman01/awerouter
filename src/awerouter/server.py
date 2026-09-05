@@ -344,6 +344,20 @@ def _resolve_for_request(body: dict, profile, settings, protocol: str,
     )
 
 
+def _hop(state: "_RoutingState", pos: int) -> None:
+    """Move the request to queue[pos], stamping the failover into the label
+    (so the degradation is visible per request and in the usage log)."""
+    cand = state.queue[pos]
+    state.queue_pos = pos
+    state.result = ResolveResult(
+        destination=cand.tier,
+        model=cand.dest.model,
+        label=state.result.label + f"→fb:{cand.dest.provider_name},{cand.dest.model}",
+        inspect=state.result.inspect,
+    )
+    state.fallback_hops += 1
+
+
 class _RoutingState:
     """Mutable routing state shared across the retry loop."""
 
@@ -376,13 +390,18 @@ class _RoutingState:
         self.queue_pos = 0
         self.fallback_hops = 0
         self.tried: list[str] = []   # candidates attempted, named in the exhausted error
+        # Subscription logins that answered 401 twice (dead account token) —
+        # no later hop may ride them again.
+        self.rejected_auths: set = set()
         if providers is not None:
-            # Start past candidates still cooling from a recent quota
+            # Start at the first candidate awake from a recent quota
             # rejection, so a dead window does not tax every request with a
             # doomed first hit. Advisory: all cooling -> primary as usual.
-            while _cooling(self.queue[self.queue_pos].dest) and \
-                    _next_fallback(self, providers):
-                pass
+            for pos, cand in enumerate(self.queue):
+                if not _cooling(cand.dest, self.protocol):
+                    if pos > 0:
+                        _hop(self, pos)
+                    break
         self.streaming_started = False
         self.codex_retried = False          # 401 auth retry happened (codex re-read / claude refresh)
         self.claude_force_refresh = False   # next upstream call forces a claude token refresh
@@ -657,7 +676,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
             # Quota/transient rejection: remember it (cooldown), then try the
             # next candidate. An exhausted queue streams this response back
             # untouched — the last upstream error is the honest answer.
-            _cooldown_mark(dest, up, status)
+            _cooldown_mark(dest, up, status, endpoint_protocol)
             if _next_fallback(state, providers):
                 up.close()
                 nxt = state.queue[state.queue_pos].dest
@@ -679,16 +698,18 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
 
         # Second 401: the login itself is rejected (dead account token, not a
         # mid-flight refresh). Only a candidate riding different credentials
-        # can save the request — the rescue filters on auth (hard, unlike
-        # cooldown) — and prints one line per failover, so a dead login is
-        # loud instead of silently burning another destination.
-        if (status == 401 and auth in (AUTH_SENTINEL, CLAUDE_SENTINEL)
-                and _next_fallback(state, providers, exclude_auth=auth)):
-            up.close()
-            nxt = state.queue[state.queue_pos].dest
-            print(f"  {auth} 401 -> login rejected after retry; {request_id} fails over to "
-                  f"{nxt.provider_name},{nxt.model}")
-            continue
+        # can save the request — the rescue remembers the rejected login for
+        # every later hop (hard, unlike cooldown) — and prints one line per
+        # failover, so a dead login is loud instead of silently burning
+        # another destination.
+        if status == 401 and auth in (AUTH_SENTINEL, CLAUDE_SENTINEL):
+            state.rejected_auths.add(auth)
+            if _next_fallback(state, providers):
+                up.close()
+                nxt = state.queue[state.queue_pos].dest
+                print(f"  {auth} 401 -> login rejected after retry; {request_id} fails over to "
+                      f"{nxt.provider_name},{nxt.model}")
+                continue
 
         # A codex 200 for a non-streaming client: the upstream ran SSE (the
         # backend has no non-streaming mode) — buffer it back into one JSON
@@ -814,15 +835,18 @@ async def handle_responses(request: web.Request) -> web.StreamResponse:
 
 
 # Failover cooldown: in-process memory of recently quota-rejected candidates,
-# (provider, model) -> monotonic deadline. Advisory, never a hard wall — if
-# every remaining candidate cools down, the next one is tried anyway, because
-# a cheap probe beats erroring. Restarts clear it; that IS the recovery path.
-_COOLDOWN_UNTIL: dict[tuple[str, str], float] = {}
+# (protocol, provider, model) -> monotonic deadline. The protocol scopes the
+# memory: a gateway may serve the same provider name in several protocol
+# groups with different accounts — a 429 on one must not sideline the others.
+# Advisory, never a hard wall — if every remaining candidate cools down, the
+# next one is tried anyway, because a cheap probe beats erroring. Restarts
+# clear it; that IS the recovery path.
+_COOLDOWN_UNTIL: dict[tuple[str, str, str], float] = {}
 _COOLDOWN_DEFAULT_S = 30   # a 429 without Retry-After: probe again after this
 _COOLDOWN_MAX_S = 60       # cap however long Retry-After asks for
 
 
-def _cooldown_mark(dest, up, status: int) -> None:
+def _cooldown_mark(dest, up, status: int, protocol: str) -> None:
     """Remember a quota-shaped rejection so upcoming requests skip this
     candidate. Retry-After wins when present and parseable (HTTP-date forms
     are not parsed — the 429 default applies); without it only a 429 counts:
@@ -838,47 +862,39 @@ def _cooldown_mark(dest, up, status: int) -> None:
         secs = _COOLDOWN_DEFAULT_S
     if not secs or secs < 1:
         return
-    _COOLDOWN_UNTIL[(dest.provider_name, dest.model)] = (
+    _COOLDOWN_UNTIL[(protocol, dest.provider_name, dest.model)] = (
         time.monotonic() + min(secs, _COOLDOWN_MAX_S))
 
 
-def _cooling(dest) -> bool:
+def _cooling(dest, protocol: str) -> bool:
     """True while a recent quota rejection's cooldown still holds."""
-    return time.monotonic() < _COOLDOWN_UNTIL.get((dest.provider_name, dest.model), 0.0)
+    return time.monotonic() < _COOLDOWN_UNTIL.get(
+        (protocol, dest.provider_name, dest.model), 0.0)
 
 
-def _next_fallback(state: _RoutingState, providers: dict,
-                   exclude_auth: str | None = None) -> bool:
+def _next_fallback(state: _RoutingState, providers: dict) -> bool:
     """Advance the failover queue to the next usable candidate; False when
     exhausted (the caller then surfaces the current response or error).
 
     Cooldown skips are advisory — all cooling means take the next one anyway;
-    exclude_auth is a hard filter — the 401 rescue must not land on another
-    candidate riding the same rejected login, it would only re-fail. Each
-    hop is stamped into the label, so the degradation is visible per request.
+    state.rejected_auths is a hard filter — a login that already answered
+    401 twice (dead account token) must not be ridden again by a later hop,
+    it would only re-fail. Each hop is stamped into the label, so the
+    degradation is visible per request.
     """
     pick = None
     for pos in range(state.queue_pos + 1, len(state.queue)):
         cand = state.queue[pos]
-        if (exclude_auth is not None
-                and providers[cand.dest.provider_name].auth == exclude_auth):
+        if providers[cand.dest.provider_name].auth in state.rejected_auths:
             continue
         if pick is None:
             pick = pos  # first candidate the auth filter allows (advisory floor)
-        if not _cooling(cand.dest):
+        if not _cooling(cand.dest, state.protocol):
             pick = pos  # first awake candidate — the real choice
             break
     if pick is None:
         return False
-    state.queue_pos = pick
-    cand = state.queue[pick]
-    state.result = ResolveResult(
-        destination=cand.tier,
-        model=cand.dest.model,
-        label=state.result.label + f"→fb:{cand.dest.provider_name},{cand.dest.model}",
-        inspect=state.result.inspect,
-    )
-    state.fallback_hops += 1
+    _hop(state, pick)
     return True
 
 

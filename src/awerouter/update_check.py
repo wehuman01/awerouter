@@ -81,7 +81,7 @@ def check_async(args):
     if _should_skip(list(args)):
         return lambda: None
 
-    result = [None]
+    result: "list[str | None]" = [None]
     done = threading.Event()
 
     def _run():
@@ -123,7 +123,14 @@ def _check():
     if cache and now - cache.get("lastChecked", 0) < CHECK_INTERVAL_S:
         latest = cache.get("latestVersion")
     else:
-        latest = get_pypi_latest()
+        try:
+            latest = get_pypi_latest()
+        except Exception:
+            # A failed check still counts as checked: without this an
+            # offline machine pays the urlopen timeout on every command,
+            # forever. Keep the last known latestVersion (if any) so the
+            # serve-banner hint survives a transient outage.
+            latest = cache.get("latestVersion") if cache else None
         _save_cache(cache_path, {
             "lastChecked": now,
             "latestVersion": latest,

@@ -1366,6 +1366,29 @@ class TestBackups:
         with pytest.raises(SystemExit, match="backups key must be flash or pro"):
             self._load(tmp_path, monkeypatch, {"fast": ["a,m3"]})
 
+    def test_backups_for_undefined_tier_dies(self, tmp_path, monkeypatch):
+        """backups keyed by a tier with no destination is an actionable config
+        error, not a KeyError traceback — hot reload only catches SystemExit."""
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {"cc-1": {
+            "protocol": "anthropic", "longContextThreshold": 1,
+            "destinations": {"flash": "p,m1"},
+            "backups": {"pro": ["a,m2"]},
+        }})
+        with pytest.raises(SystemExit, match="must define both 'flash' and 'pro'"):
+            load_routing()
+
+    def test_missing_tier_destinations_dies(self, tmp_path, monkeypatch):
+        """A single-tier destinations dict would KeyError at request time
+        (resolve and the implicit hop index by tier) — die at load instead."""
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {"cc-1": {
+            "protocol": "anthropic", "longContextThreshold": 1,
+            "destinations": {"flash": "p,m1"},
+        }})
+        with pytest.raises(SystemExit, match="missing 'pro'"):
+            load_routing()
+
     def test_not_object_dies(self, tmp_path, monkeypatch):
         with pytest.raises(SystemExit, match="'backups' must be an object"):
             self._load(tmp_path, monkeypatch, ["a,m3"])
@@ -1406,6 +1429,33 @@ class TestBackups:
         p = self._load(tmp_path, monkeypatch, {"flash": ["a,m3"]})
         out = format_routing_display(Settings(), {"cc-1": p})
         assert '"backups"' in out and '"a,m3"' in out
+
+    def test_display_shows_pool_and_multimodal(self):
+        """Failover-relevant provider flags must be visible in config show —
+        two configs with different pool/multimodal must not display alike."""
+        p = Provider("p", "https://api.stepfun.com", "${K}", pool="accts",
+                     multimodal=True)
+        out = format_providers_display({"anthropic": {"p": p}})
+        assert '"pool": "accts"' in out
+        assert '"multimodal": true' in out
+        plain = Provider("p", "https://api.stepfun.com", "${K}")
+        out2 = format_providers_display({"anthropic": {"p": plain}})
+        assert "pool" not in out2 and "multimodal" not in out2
+
+    def test_profile_view_includes_backup_providers(self, tmp_path, monkeypatch):
+        """`config show <profile>` lists the providers the profile's failover
+        can actually reach — backups included, not just the primaries."""
+        from click.testing import CliRunner
+        from awerouter.config import config_show_cmd
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {
+            "anthropic": {
+                "p": {"base_url": "https://api.stepfun.com", "auth": "${K}"},
+                "a": {"base_url": "https://api.stepfun.com", "auth": "${K}"},
+            },
+        }, {"cc-1": self._body({"flash": ["a,m3"]})})
+        out = CliRunner().invoke(config_show_cmd, ["cc-1"]).output
+        assert '"p"' in out and '"a"' in out
 
     def test_display_omits_empty_backups(self, tmp_path, monkeypatch):
         p = self._load(tmp_path, monkeypatch, {})

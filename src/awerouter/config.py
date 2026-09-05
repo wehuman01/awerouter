@@ -489,6 +489,14 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
             if tier not in ("flash", "pro"):
                 die(f"profile '{name}' destination key must be flash or pro, got: {tier}")
             parsed[tier] = _parse_destination(str(raw))
+        for tier in ("flash", "pro"):
+            # Both tiers must exist: resolve() and the implicit failover hop
+            # index destinations by tier key, and backups for a missing tier
+            # have no primary to back up — a load-time die() beats a
+            # request-time KeyError.
+            if tier not in parsed:
+                die(f"profile '{name}' destinations must define both 'flash' and "
+                    f"'pro' (missing '{tier}')")
         backups = _parse_backups(name, body.get("backups"), parsed)
         raw_threshold = body["longContextThreshold"]
         if raw_threshold == "auto":
@@ -745,6 +753,10 @@ def format_providers_display(all_providers: dict[str, dict[str, Provider]]) -> s
         protocol_display = {}
         for name, p in group.items():
             entry = {"base_url": p.base_url, "auth_header": p.auth_header}
+            if p.pool:
+                entry["pool"] = p.pool
+            if p.multimodal:
+                entry["multimodal"] = True
             if not p.auth:
                 entry["auth"] = None  # no-auth upstream (local model server)
             elif p.auth == AUTH_SENTINEL:
@@ -946,7 +958,12 @@ def config_show_cmd(profile):
     used = {}
     for proto in p.protocols:
         group = providers_all[proto]
-        used[proto] = {d.provider_name: group[d.provider_name] for d in p.destinations.values()}
+        # Backup-referenced providers belong to the profile's view too:
+        # failover behavior (and the image guard) depends on their flags.
+        dests = list(p.destinations.values())
+        for queue in p.backups.values():
+            dests += queue
+        used[proto] = {d.provider_name: group[d.provider_name] for d in dests}
     click.echo("providers:")
     click.echo(format_providers_display(used))
     click.echo()

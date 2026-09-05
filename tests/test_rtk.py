@@ -207,6 +207,37 @@ class TestFilters:
         assert "* dev" in out
         assert "+ Staged: 1 files" in out
         assert "~ Modified: 1 files" in out
+        assert "? Untracked: 1 files" in out
+        assert "notes.txt" in out
+
+    def test_git_status_untracked_only_is_not_clean(self):
+        """Long-form status with only untracked files must not read as a
+        clean tree — an agent trusting that could clobber 'invisible' files."""
+        text = (
+            "On branch main\n"
+            "Untracked files:\n"
+            "  (use \"git add <file>...\" to include in what will be committed)\n"
+            "\tnotes.md\n"
+            "\n"
+            "nothing added to commit but untracked files present "
+            "(use \"git add\" to track)\n"
+        )
+        out = git_status(text)
+        assert "? Untracked: 1 files" in out
+        assert "notes.md" in out
+        assert "clean" not in out
+
+    def test_git_diff_output_cap_stays_under_smart_truncate(self):
+        """The default cap must stay below SMART_TRUNCATE_MIN_LINES: compacted
+        diffs are resent as history every turn, and a 250+ line summary would
+        re-enter smart-truncate on the next pass — more data loss and broken
+        provider cache prefixes."""
+        files = []
+        for i in range(60):
+            body = "\n".join(f"+line{j}" for j in range(6))
+            files.append(f"diff --git a/f{i}.py b/f{i}.py\n@@ -1,3 +1,9 @@\n{body}")
+        out = git_diff("\n".join(files))
+        assert len(out.split("\n")) < 250
 
     def test_git_status_clean(self):
         assert git_status("On branch main\nnothing to commit, working tree clean\n") == \

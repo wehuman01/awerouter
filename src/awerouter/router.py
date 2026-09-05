@@ -52,7 +52,11 @@ def build_queue(dest_key: str, profile, feat: InspectResult,
     queue += [Candidate(dest_key, d) for d in declared]
     if not declared:
         other = "pro" if dest_key == "flash" else "flash"
-        queue.append(Candidate(other, dests[other]))
+        # The implicit hop exists to reach a DIFFERENT serving candidate; when
+        # both tiers name the same provider+model it would only re-send the
+        # request to the endpoint that just failed it.
+        if dests[other] != dests[dest_key]:
+            queue.append(Candidate(other, dests[other]))
     if feat.has_image and providers is not None:
         # Keep the head; a backup the image guard cannot vouch for is dropped,
         # never silently handed an image it cannot see.
