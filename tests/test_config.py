@@ -1328,3 +1328,109 @@ class TestRtkFlag:
         data = json.loads(format_routing_display(settings, profiles))
         assert "rtk" not in data["off"]
         assert data["on"]["rtk"] is True
+
+
+# ---------------------------------------------------------------------------
+# backups (failover queues) and the multimodal provider flag
+# ---------------------------------------------------------------------------
+
+class TestBackups:
+    def _body(self, backups):
+        return {
+            "protocol": "anthropic", "longContextThreshold": 1,
+            "destinations": {"flash": "p,m1", "pro": "p,m2"},
+            "backups": backups,
+        }
+
+    def _load(self, tmp_path, monkeypatch, backups):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {"cc-1": self._body(backups)})
+        return load_routing()[1]["cc-1"]
+
+    def test_lists_and_bare_string(self, tmp_path, monkeypatch):
+        p = self._load(tmp_path, monkeypatch, {
+            "flash": ["a,m3", "b,m4"], "pro": "c,m5"})
+        assert [(d.provider_name, d.model) for d in p.backups["flash"]] == [
+            ("a", "m3"), ("b", "m4")]
+        assert [(d.provider_name, d.model) for d in p.backups["pro"]] == [("c", "m5")]
+
+    def test_absent_means_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {}, {
+            "cc-1": {"protocol": "anthropic", "longContextThreshold": 1,
+                     "destinations": {"flash": "p,m1", "pro": "p,m2"}},
+        })
+        assert load_routing()[1]["cc-1"].backups == {}
+
+    def test_bad_tier_dies(self, tmp_path, monkeypatch):
+        with pytest.raises(SystemExit, match="backups key must be flash or pro"):
+            self._load(tmp_path, monkeypatch, {"fast": ["a,m3"]})
+
+    def test_not_object_dies(self, tmp_path, monkeypatch):
+        with pytest.raises(SystemExit, match="'backups' must be an object"):
+            self._load(tmp_path, monkeypatch, ["a,m3"])
+
+    def test_bad_element_dies(self, tmp_path, monkeypatch):
+        with pytest.raises(SystemExit, match="destination must be 'provider,model'"):
+            self._load(tmp_path, monkeypatch, {"flash": ["a,m3", "nope"]})
+
+    def test_empty_list_dies(self, tmp_path, monkeypatch):
+        with pytest.raises(SystemExit, match="non-empty list"):
+            self._load(tmp_path, monkeypatch, {"flash": []})
+
+    def test_duplicate_of_primary_dies(self, tmp_path, monkeypatch):
+        with pytest.raises(SystemExit, match="duplicates the primary"):
+            self._load(tmp_path, monkeypatch, {"flash": ["p,m1"]})
+
+    def test_duplicate_inside_list_dies(self, tmp_path, monkeypatch):
+        with pytest.raises(SystemExit, match="repeats"):
+            self._load(tmp_path, monkeypatch, {"flash": ["a,m3", "a,m3"]})
+
+    def test_validate_missing_provider_dies(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {
+            "anthropic": {"p": {"base_url": "https://api.stepfun.com", "auth": "${K}"}},
+        }, {"cc-1": self._body({"flash": ["gone,m9"]})})
+        with pytest.raises(SystemExit, match=r"'gone'.*backups 'flash'"):
+            validate_profiles(load_providers(), load_routing()[1])
+
+    def test_validate_accepts_present_provider(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {
+            "anthropic": {"p": {"base_url": "https://api.stepfun.com", "auth": "${K}"},
+                          "a": {"base_url": "https://api.stepfun.com", "auth": "${K}"}},
+        }, {"cc-1": self._body({"flash": ["a,m3"]})})
+        validate_profiles(load_providers(), load_routing()[1])  # must not raise
+
+    def test_display_shows_backups(self, tmp_path, monkeypatch):
+        p = self._load(tmp_path, monkeypatch, {"flash": ["a,m3"]})
+        out = format_routing_display(Settings(), {"cc-1": p})
+        assert '"backups"' in out and '"a,m3"' in out
+
+    def test_display_omits_empty_backups(self, tmp_path, monkeypatch):
+        p = self._load(tmp_path, monkeypatch, {})
+        assert '"backups"' not in format_routing_display(Settings(), {"cc-1": p})
+
+
+class TestMultimodalFlag:
+    def _providers(self, tmp_path, monkeypatch, entry):
+        monkeypatch.setenv("AWEROUTER_CONFIG_DIR", str(tmp_path))
+        _write_config(tmp_path, {"anthropic": {"p": entry}}, {})
+        return load_providers()["anthropic"]["p"]
+
+    def test_default_false(self, tmp_path, monkeypatch):
+        p = self._providers(tmp_path, monkeypatch,
+                            {"base_url": "https://api.stepfun.com", "auth": "${K}"})
+        assert p.multimodal is False
+
+    def test_true(self, tmp_path, monkeypatch):
+        p = self._providers(tmp_path, monkeypatch,
+                            {"base_url": "https://api.stepfun.com", "auth": "${K}",
+                             "multimodal": True})
+        assert p.multimodal is True
+
+    def test_non_bool_dies(self, tmp_path, monkeypatch):
+        with pytest.raises(SystemExit, match="'multimodal' must be true or false"):
+            self._providers(tmp_path, monkeypatch,
+                            {"base_url": "https://api.stepfun.com", "auth": "${K}",
+                             "multimodal": "yes"})

@@ -5,8 +5,8 @@ import json
 import pytest
 
 from awerouter.protocols import effective_tokens, estimate_tokens, extract
-from awerouter.router import resolve
-from awerouter.types import Destination
+from awerouter.router import build_queue, resolve
+from awerouter.types import Destination, InspectResult, Provider, RoutingProfile
 
 
 def _cfg():
@@ -876,3 +876,73 @@ class TestResolveAcrossProtocols:
         r = resolve("auto", extract("openai-responses", body), _cfg(), "flash", "think", 100)
         assert r.destination == "flash"
         assert r.label == "default"
+
+
+# ---------------------------------------------------------------------------
+# build_queue (failover queue expansion)
+# ---------------------------------------------------------------------------
+
+class TestBuildQueue:
+    """Queue expansion: the implicit cross-tier hop under zero config, the
+    explicit backups that replace it, and the image guard filtering
+    candidates during failover."""
+
+    def _profile(self, backups=None):
+        return RoutingProfile(
+            name="q", protocols="anthropic", long_context_threshold=32,
+            destinations=_cfg(), backups=backups or {})
+
+    def _feat(self, has_image=False):
+        return InspectResult(token_count=1, has_image=has_image, has_web_search=False,
+                             message_count=1)
+
+    def _names(self, queue):
+        return [(c.tier, c.dest.provider_name, c.dest.model) for c in queue]
+
+    def test_zero_config_flash_gains_pro(self):
+        assert self._names(build_queue("flash", self._profile(), self._feat())) == [
+            ("flash", "stepfun", "step-3.5-flash"),
+            ("pro", "anthropic", "claude-opus-5"),
+        ]
+
+    def test_zero_config_pro_gains_flash(self):
+        assert self._names(build_queue("pro", self._profile(), self._feat())) == [
+            ("pro", "anthropic", "claude-opus-5"),
+            ("flash", "stepfun", "step-3.5-flash"),
+        ]
+
+    def test_explicit_backups_replace_the_implicit_hop(self):
+        p = self._profile(backups={"flash": [Destination("glm", "glm-4.7-flash")]})
+        assert [c.dest.model for c in build_queue("flash", p, self._feat())] == [
+            "step-3.5-flash", "glm-4.7-flash"]  # no pro appended
+
+    def test_other_tier_backups_do_not_leak(self):
+        p = self._profile(backups={"pro": [Destination("glm", "glm-5.3")]})
+        assert [c.dest.model for c in build_queue("flash", p, self._feat())] == [
+            "step-3.5-flash", "claude-opus-5"]
+
+    def test_image_guard_keeps_declared_backup_drops_undeclared(self):
+        p = self._profile(backups={"flash": [Destination("glm", "glm-4.7-flash")]})
+        declared = {
+            "stepfun": Provider("stepfun", "http://x", "k"),
+            "anthropic": Provider("anthropic", "http://x", "k"),
+            "glm": Provider("glm", "http://x", "k", multimodal=True),
+        }
+        assert [c.dest.model for c in
+                build_queue("flash", p, self._feat(has_image=True), declared)] == [
+            "step-3.5-flash", "glm-4.7-flash"]
+        undeclared = {n: Provider(n, "http://x", "k") for n in declared}
+        # the primary always stands (resolve made the image decision); only
+        # the unvouched backup is dropped
+        assert [c.dest.model for c in
+                build_queue("flash", p, self._feat(has_image=True), undeclared)] == [
+            "step-3.5-flash"]
+
+    def test_image_guard_filters_the_implicit_hop_too(self):
+        providers = {
+            "stepfun": Provider("stepfun", "http://x", "k", multimodal=True),
+            "anthropic": Provider("anthropic", "http://x", "k"),
+        }
+        assert [c.dest.model for c in
+                build_queue("flash", self._profile(), self._feat(has_image=True),
+                            providers)] == ["step-3.5-flash"]

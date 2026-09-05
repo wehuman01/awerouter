@@ -903,11 +903,11 @@ class TestCodexAccount:
                 await up_server.close()
         run(t())
         assert len(calls) == 3  # codex 401, re-read retry 401, keyed pro 200
-        assert "falls back to pro" in capsys.readouterr().out
+        assert "fails over to deepseek,deepseek-chat" in capsys.readouterr().out
         from awerouter.logging import tail
         e = tail(1)[0]
-        assert e.provider == "deepseek" and e.label.endswith("→fallback")
-        assert e.codex_retried is True
+        assert e.provider == "deepseek" and e.label.endswith("→fb:deepseek,deepseek-chat")
+        assert e.codex_retried is True and e.fallback_hops == 1
 
     def test_second_401_surfaces_to_client(self):
         """Both destinations ride the same codex login: a fallback would just
@@ -1134,7 +1134,7 @@ class TestClaudeAccount:
                 await up_server.close()
         run(t())
         assert len(calls) == 3  # claude 401, refreshed retry 401, keyed pro 200
-        assert "falls back to pro" in capsys.readouterr().out
+        assert "fails over to" in capsys.readouterr().out
 
     def test_second_401_surfaces_to_client(self, monkeypatch):
         """Both destinations ride the same claude login: a fallback would just
@@ -1869,3 +1869,203 @@ class TestImageBridge:
         asyncio.run(t())
         out = capsys.readouterr().out
         assert "image bridge" in out and "sf-flash" in out
+
+
+# ---------------------------------------------------------------------------
+# Failover queues: quota-aware candidate walk, cooldown, honest exhaustion
+# ---------------------------------------------------------------------------
+
+def _providers_multi(port):
+    """Three providers (flash/pro/backup) on one mock upstream — the same
+    shape as _providers, plus the backup tier's provider."""
+    os.environ.setdefault("STEPFUN_KEY", "flash-key")
+    os.environ.setdefault("ANTHROPIC_KEY", "pro-key")
+    os.environ.setdefault("GLM_KEY", "backup-key")
+    def group():
+        return {
+            "stepfun": Provider("stepfun", f"http://127.0.0.1:{port}", "${STEPFUN_KEY}"),
+            "anthropic": Provider("anthropic", f"http://127.0.0.1:{port}", "${ANTHROPIC_KEY}", "x-api-key"),
+            "glm": Provider("glm", f"http://127.0.0.1:{port}", "${GLM_KEY}"),
+        }
+    return {p: group() for p in ("anthropic", "openai-chat", "openai-responses")}
+
+
+class TestFailoverQueues:
+    @pytest.fixture(autouse=True)
+    def _clear_cooldown(self):
+        from awerouter import server
+        server._COOLDOWN_UNTIL.clear()
+        yield
+        server._COOLDOWN_UNTIL.clear()
+
+    def _profile(self, backups=None):
+        return RoutingProfile("t", "anthropic", 32, {
+            "flash": Destination("stepfun", "step-3.5-flash"),
+            "pro": Destination("anthropic", "claude-opus-5"),
+        }, backups=backups or {})
+
+    def test_multi_hop_walks_declared_backups(self):
+        """flash 429 -> first backup 429 -> second backup 200: the queue is
+        walked in order, every hop stamped into the label."""
+        hits = []
+
+        async def t():
+            async def up(request):
+                body = await request.json()
+                hits.append(body["model"])
+                if body["model"] in ("step-3.5-flash", "glm-4.7-flash"):
+                    return web.json_response({"error": "quota"}, status=429)
+                return web.json_response({"model": body["model"], "ok": True})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                app = create_app(_providers_multi(up_server.port), self._profile({
+                    "flash": [Destination("glm", "glm-4.7-flash"),
+                              Destination("anthropic", "claude-opus-5")],
+                }), SETTINGS)
+                async with TestClient(TestServer(app)) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "flash", "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+                    assert (await r.json())["model"] == "claude-opus-5"
+            finally:
+                await up_server.close()
+        run(t())
+        assert hits == ["step-3.5-flash", "glm-4.7-flash", "claude-opus-5"]
+        from awerouter.logging import tail
+        e = tail(1)[0]
+        assert e.fallback_hops == 2
+        assert e.label == ("background→fb:glm,glm-4.7-flash"
+                           "→fb:anthropic,claude-opus-5")
+
+    def test_exhausted_queue_passes_last_response_through(self):
+        """Queue exhausted: the last upstream error reaches the client
+        untouched — never swallowed, never rewritten."""
+        async def t():
+            async def up(request):
+                body = await request.json()
+                if body["model"] in ("step-3.5-flash", "glm-4.7-flash"):
+                    return web.json_response(
+                        {"error": {"message": "glm quota exceeded"}}, status=429)
+                return web.json_response({"model": body["model"]})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                app = create_app(_providers_multi(up_server.port), self._profile({
+                    "flash": [Destination("glm", "glm-4.7-flash")],
+                }), SETTINGS)
+                async with TestClient(TestServer(app)) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "flash", "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 429
+                    assert (await r.json())["error"]["message"] == "glm quota exceeded"
+            finally:
+                await up_server.close()
+        run(t())
+
+    def test_pro_falls_back_to_flash_by_default(self):
+        """Zero config on pro: a 429'd pro hands the request to flash — the
+        downgrade is loud (label), the request survives."""
+        async def t():
+            async def up(request):
+                body = await request.json()
+                if body["model"] == "claude-opus-5":
+                    return web.json_response({"error": "quota"}, status=429)
+                return web.json_response({"model": body["model"]})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                app = create_app(_providers_multi(up_server.port), self._profile(), SETTINGS)
+                async with TestClient(TestServer(app)) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "pro", "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+                    assert (await r.json())["model"] == "step-3.5-flash"
+            finally:
+                await up_server.close()
+        run(t())
+        from awerouter.logging import tail
+        e = tail(1)[0]
+        assert e.label == "think→fb:stepfun,step-3.5-flash"
+        assert e.destination == "flash" and e.fallback_hops == 1
+
+    def test_429_cooldown_skips_candidate_on_next_request(self):
+        """Retry-After starts a cooldown: the next request skips the cooling
+        candidate instead of re-hitting its 429."""
+        hits = []
+
+        async def t():
+            async def up(request):
+                body = await request.json()
+                hits.append(body["model"])
+                if body["model"] == "step-3.5-flash":
+                    return web.json_response({"error": "quota"}, status=429,
+                                             headers={"retry-after": "60"})
+                return web.json_response({"model": body["model"]})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                app = create_app(_providers_multi(up_server.port), self._profile(), SETTINGS)
+                async with TestClient(TestServer(app)) as c:
+                    for _ in range(2):
+                        r = await c.post("/v1/messages", json={
+                            "model": "flash", "messages": [{"content": "hi"}],
+                        })
+                        assert r.status == 200
+            finally:
+                await up_server.close()
+        run(t())
+        assert hits == ["step-3.5-flash", "claude-opus-5",  # request 1: 429, fail over
+                        "claude-opus-5"]                    # request 2: flash cooling, skip
+
+    def test_network_error_502_names_every_candidate(self):
+        """All candidates unreachable: the 502 lists the whole chain so the
+        operator sees exactly who was tried."""
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        dead_port = s.getsockname()[1]
+        s.close()
+
+        async def t():
+            app = create_app(_providers_multi(dead_port), self._profile({
+                "flash": [Destination("glm", "glm-4.7-flash")],
+            }), SETTINGS)
+            async with TestClient(TestServer(app)) as c:
+                r = await c.post("/v1/messages", json={
+                    "model": "flash", "messages": [{"content": "hi"}],
+                })
+                assert r.status == 502
+                msg = (await r.json())["error"]["message"]
+                assert "tried stepfun,step-3.5-flash -> glm,glm-4.7-flash" in msg
+        run(t())
+
+    def test_serve_banner_prints_failover_chains(self, capsys):
+        """The banner names each tier's effective chain — implicit hop marked
+        as such, declared backups in order."""
+        async def t():
+            task = asyncio.ensure_future(_serve(
+                "127.0.0.1", 0, _providers_multi(0), self._profile({
+                    "flash": [Destination("glm", "glm-4.7-flash")],
+                }), SETTINGS, True))
+            await asyncio.sleep(0.5)
+            task.cancel()
+            await task
+        asyncio.run(t())
+        out = capsys.readouterr().out
+        assert "failover" in out
+        assert "flash: glm/glm-4.7-flash  |  pro: flash (implicit)" in out

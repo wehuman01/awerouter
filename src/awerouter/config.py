@@ -213,9 +213,13 @@ def load_providers(path: Optional[Path] = None) -> dict[str, dict[str, Provider]
                 die(f"provider '{protocol}.{name}' missing base_url")
             auth_header = entry.get("auth_header") or detect_auth_header(base_url)
             models = _parse_provider_models(protocol, name, entry.get("models"))
+            multimodal_raw = entry.get("multimodal", False)
+            if not isinstance(multimodal_raw, bool):
+                die(f"provider '{protocol}.{name}' 'multimodal' must be true or "
+                    f"false, got: {multimodal_raw!r}")
             group_providers[name] = Provider(
                 name=name, base_url=base_url, auth=auth, auth_header=auth_header,
-                models=models,
+                models=models, multimodal=multimodal_raw,
             )
         result[protocol] = group_providers
     return result
@@ -236,6 +240,43 @@ def _parse_provider_models(protocol: str, name: str, raw) -> tuple:
                 f"model-id strings, got: {entry!r}")
         models.append(entry.strip())
     return tuple(models)
+
+
+def _parse_backups(name: str, raw, destinations: dict) -> dict:
+    """Parse a profile's optional 'backups' block: ordered failover queues
+    keyed by destination key, each entry a 'provider,model' destination
+    (a bare string is a one-element queue). Empty dict = zero-config.
+
+    Explicit lists replace the implicit cross-tier hop for that tier — the
+    queue is exactly what was written — so a duplicate of the tier's primary,
+    or a duplicate inside the list, is a config error, not a silent dead hop.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        die(f"profile '{name}': 'backups' must be an object keyed by flash/pro")
+    backups: dict[str, list] = {}
+    for tier, entries in raw.items():
+        if tier not in ("flash", "pro"):
+            die(f"profile '{name}' backups key must be flash or pro, got: {tier}")
+        if isinstance(entries, str):
+            entries = [entries]
+        if (not isinstance(entries, list) or not entries
+                or not all(isinstance(e, str) for e in entries)):
+            die(f"profile '{name}' backups '{tier}' must be a 'provider,model' "
+                f"string or a non-empty list of them")
+        queue: list = []
+        seen = {f"{destinations[tier].provider_name},{destinations[tier].model}"}
+        for entry in entries:
+            dest = _parse_destination(entry)
+            key = f"{dest.provider_name},{dest.model}"
+            if key in seen:
+                die(f"profile '{name}' backups '{tier}' repeats '{key}' (or it "
+                    "duplicates the primary — a dead hop in the queue)")
+            seen.add(key)
+            queue.append(dest)
+        backups[tier] = queue
+    return backups
 
 
 def _parse_auto_threshold(raw, base: AutoThresholdConfig | None = None,
@@ -310,6 +351,7 @@ _SETTINGS_KEYS = frozenset({
 # Keys that belong to the profile body itself (settings keys may join them).
 _PROFILE_KEYS = frozenset({
     "protocol", "longContextThreshold", "destinations", "port", "rtk",
+    "backups",
 })
 
 
@@ -438,6 +480,7 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
             if tier not in ("flash", "pro"):
                 die(f"profile '{name}' destination key must be flash or pro, got: {tier}")
             parsed[tier] = _parse_destination(str(raw))
+        backups = _parse_backups(name, body.get("backups"), parsed)
         raw_threshold = body["longContextThreshold"]
         if raw_threshold == "auto":
             # Resolved at serve start; the fallback value keeps reads before
@@ -465,6 +508,7 @@ def load_routing(path: Optional[Path] = None) -> tuple[Settings, dict[str, Routi
             rtk=rtk_raw,
             settings=psettings,
             settings_overrides=raw_psettings,
+            backups=backups,
         )
     if default_profile is not None and default_profile not in profiles:
         avail = ", ".join(profiles) or "(none)"
@@ -499,6 +543,18 @@ def validate_profiles(providers_all: dict, profiles: dict) -> None:
                         f"'{profile.name}') not found in the '{protocol}' group of "
                         f"providers.json; available: {avail}"
                     )
+            # Backup queues live or die with the same rule as destinations:
+            # every candidate must resolve in every served group, so failover
+            # can never hand a request to a provider the protocol can't reach.
+            for tier, queue in profile.backups.items():
+                for dest in queue:
+                    if dest.provider_name not in group:
+                        avail = ", ".join(group) or "(none)"
+                        die(
+                            f"provider '{dest.provider_name}' (backups '{tier}' of profile "
+                            f"'{profile.name}') not found in the '{protocol}' group of "
+                            f"providers.json; available: {avail}"
+                        )
 
 
 def load_for_profile(name: str) -> tuple[dict[str, dict[str, Provider]], RoutingProfile, Settings]:
@@ -737,6 +793,11 @@ def format_routing_display(settings: Settings, profiles: dict[str, RoutingProfil
         entry["destinations"] = {
             k: f"{v.provider_name},{v.model}" for k, v in p.destinations.items()
         }
+        if p.backups:
+            entry["backups"] = {
+                k: [f"{d.provider_name},{d.model}" for d in queue]
+                for k, queue in p.backups.items()
+            }
         display[name] = entry
     return json.dumps(display, indent=2)
 

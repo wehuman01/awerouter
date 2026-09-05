@@ -18,6 +18,10 @@ class Provider:
     # Models this provider can directly serve under gateway mode ('provider/<model>'
     # names). Empty = provider only reachable through a routing profile's destination.
     models: tuple[str, ...] = ()
+    # Provider can receive image content (failover candidates for image-bearing
+    # requests are filtered on it). Default False: an undeclared provider is
+    # never handed images during failover — the safe direction.
+    multimodal: bool = False
 
 
 @dataclass
@@ -99,6 +103,12 @@ class RoutingProfile:
     # display-only — settings keys configured directly in the profile body.
     settings: Settings = field(default_factory=Settings)
     settings_overrides: dict = field(default_factory=dict)
+    # Ordered failover queues keyed by destination key, from routing.json
+    # "backups". Empty = zero-config: the tier queues carry one implicit
+    # cross-tier hop each (flash→pro, pro→flash). An explicit list replaces
+    # the implicit hop for that tier — exactly what was written, nothing
+    # appended.
+    backups: dict = field(default_factory=dict)
 
     def __post_init__(self):
         # Accept a bare string everywhere a list works ("anthropic" == ["anthropic"]).
@@ -142,6 +152,18 @@ class ResolveResult:
 
 
 @dataclass
+class Candidate:
+    """One hop of a profile's failover queue (built after resolve picks a tier).
+
+    tier is the cost tier the hop serves as ("flash"/"pro"; "direct" for
+    gateway provider/<model> forwards) — what RequestLog.destination records —
+    while dest carries the concrete provider+model that serves it.
+    """
+    tier: str
+    dest: Destination
+
+
+@dataclass
 class RequestLog:
     ts: str
     request_id: str
@@ -162,3 +184,4 @@ class RequestLog:
     file_search_tokens: int = 0                  # estimated tokens of file-search tool results (0 = none / legacy log)
     rtk_saved: int = 0                           # estimated input tokens saved by rtk compression (0 = off / none / legacy log)
     codex_retried: bool = False                  # an upstream 401 triggered a subscription-login retry (codex re-read / claude refresh; False = no / legacy log)
+    fallback_hops: int = 0                       # failover hops taken before the response (0 = primary / legacy log)

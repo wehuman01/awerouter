@@ -46,8 +46,15 @@ from awerouter.config import (
 )
 from awerouter.logging import append, auto_threshold, ensure_log_dir
 from awerouter.protocols import ENDPOINT_PATHS, extract
-from awerouter.router import resolve
-from awerouter.types import Destination, RequestLog, ResolveResult, RoutingProfile, Settings
+from awerouter.router import build_queue, resolve
+from awerouter.types import (
+    Candidate,
+    Destination,
+    RequestLog,
+    ResolveResult,
+    RoutingProfile,
+    Settings,
+)
 from awerouter.update_check import cached_update_hint
 from awerouter.vision import (
     CAPTIONS,
@@ -343,7 +350,7 @@ class _RoutingState:
 
     def __init__(self, profile, settings, body: dict, agent: str = "", rtk_saved: int = 0,
                  protocol: str = "", resolve_model: "str | None" = None,
-                 direct_dest: Destination | None = None):
+                 direct_dest: Destination | None = None, providers: dict | None = None):
         self.profile = profile
         self.body = body
         self.inbound_model = body.get("model") or ""
@@ -353,12 +360,28 @@ class _RoutingState:
         self.direct_dest = direct_dest
         if direct_dest is None:
             self.result = _resolve_for_request(body, profile, settings, protocol, resolve_model)
+            # resolve() picks the tier; the queue decides who serves it, in
+            # order, when a candidate dies (429/quota/5xx/network, pre-stream).
+            self.queue = build_queue(self.result.destination, profile,
+                                     self.result.inspect, providers)
         else:
             self.result = ResolveResult(
                 destination="direct", model=direct_dest.model, label="direct",
                 inspect=extract(protocol, body),
             )
-        self.attempt = 0
+            # A direct forward is pinned by name: a length-1 queue, so "never
+            # falls back" needs no special case in the retry loop.
+            self.queue = (Candidate("direct", direct_dest),)
+        self.queue_pos = 0
+        self.fallback_hops = 0
+        self.tried: list[str] = []   # candidates attempted, named in the exhausted error
+        if providers is not None:
+            # Start past candidates still cooling from a recent quota
+            # rejection, so a dead window does not tax every request with a
+            # doomed first hit. Advisory: all cooling -> primary as usual.
+            while _cooling(self.queue[self.queue_pos].dest) and \
+                    _next_fallback(self, providers):
+                pass
         self.streaming_started = False
         self.codex_retried = False          # 401 auth retry happened (codex re-read / claude refresh)
         self.claude_force_refresh = False   # next upstream call forces a claude token refresh
@@ -374,14 +397,15 @@ class _RoutingState:
 
 def _log_failure(state: _RoutingState, request_id: str, t0: float, status: int) -> None:
     """Log requests that never got an upstream response (502 path)."""
-    dest = state.direct_dest or state.profile.destinations[state.result.destination]
+    cand = state.queue[state.queue_pos]
+    dest = cand.dest
     ensure_log_dir()
     append(RequestLog(
         ts=_now_iso(),
         request_id=request_id,
         model_in=state.inbound_model or "<none>",
         label=state.result.label,
-        destination=state.result.destination,
+        destination=cand.tier,
         provider=dest.provider_name,
         model_out=dest.model,
         status=status,
@@ -395,6 +419,7 @@ def _log_failure(state: _RoutingState, request_id: str, t0: float, status: int) 
         protocol=state.protocol,
         agent=state.agent,
         codex_retried=state.codex_retried,
+        fallback_hops=state.fallback_hops,
     ))
 
 
@@ -579,14 +604,16 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
         rtk_saved = stats.saved_tokens if stats else 0
 
     state = _RoutingState(profile, settings, body,
-                           _agent_from_ua(request.headers.get("User-Agent", "")),
-                           rtk_saved, endpoint_protocol, resolve_model,
-                           direct_dest)
+                          _agent_from_ua(request.headers.get("User-Agent", "")),
+                          rtk_saved, endpoint_protocol, resolve_model,
+                          direct_dest, providers)
 
     while True:
-        dest_key = state.result.destination
-        dest = state.direct_dest or state.profile.destinations[dest_key]
-        state.attempt += 1
+        cand = state.queue[state.queue_pos]
+        dest, dest_key = cand.dest, cand.tier
+        tag = f"{dest.provider_name},{dest.model}"
+        if not state.tried or state.tried[-1] != tag:  # a 401 login retry is the same candidate
+            state.tried.append(tag)
         state.codex_stream_fix = (
             providers[dest.provider_name].auth == AUTH_SENTINEL
             and not state.body.get("stream")
@@ -605,25 +632,37 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
                 content_type="application/json",
             )
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            # Network-level failure
-            if not state.direct_dest and dest_key == "flash" and state.attempt == 1:
-                state.result = _fallback_result(state)
+            # Network-level failure — next queue candidate, or the error with
+            # every attempted candidate named.
+            if _next_fallback(state, providers):
+                nxt = state.queue[state.queue_pos].dest
+                print(f"  {tag} network error ({exc}); {request_id} fails over to "
+                      f"{nxt.provider_name},{nxt.model}")
                 continue
             _log_failure(state, request_id, t0, 502)
             raise web.HTTPBadGateway(
-                text=json.dumps({"error": {"message": f"upstream error: {exc}"}}),
+                text=json.dumps({"error": {"message": (
+                    f"upstream error: {exc}; tried {' -> '.join(state.tried)}"
+                )}}),
                 content_type="application/json",
             )
 
-        # We have a response — decide whether to fallback or stream back
+        # We have a response — decide whether to fail over or stream it back.
+        # First streamed byte is the point of no return (SSE cannot be undone).
         status = up.status
         is_transient = status in (429, 408) or (status >= 500 and status < 600)
 
-        if (is_transient and not state.direct_dest and dest_key == "flash"
-                and state.attempt == 1 and not state.streaming_started):
-            up.close()
-            state.result = _fallback_result(state)
-            continue
+        if is_transient and not state.streaming_started:
+            # Quota/transient rejection: remember it (cooldown), then try the
+            # next candidate. An exhausted queue streams this response back
+            # untouched — the last upstream error is the honest answer.
+            _cooldown_mark(dest, up, status)
+            if _next_fallback(state, providers):
+                up.close()
+                nxt = state.queue[state.queue_pos].dest
+                print(f"  {tag} {status}; {request_id} fails over to "
+                      f"{nxt.provider_name},{nxt.model}")
+                continue
 
         # A codex-account 401 usually means the login file changed under us
         # (the local CLI refreshed it): re-read auth.json and retry the same
@@ -635,21 +674,19 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
             up.close()
             state.codex_retried = True
             state.claude_force_refresh = auth == CLAUDE_SENTINEL
-            state.attempt -= 1  # login retry, not a fallback attempt
             continue
 
         # Second 401: the login itself is rejected (dead account token, not a
-        # mid-flight refresh). When flash rides a subscription login and pro
-        # has its own key, the same flash→pro rescue as transient failures
-        # keeps the request alive — one printed line per fallback, so a dead
-        # login is loud instead of silently burning paid pro. Pro on the same
-        # login can't help; the 401 surfaces as before.
+        # mid-flight refresh). Only a candidate riding different credentials
+        # can save the request — the rescue filters on auth (hard, unlike
+        # cooldown) — and prints one line per failover, so a dead login is
+        # loud instead of silently burning another destination.
         if (status == 401 and auth in (AUTH_SENTINEL, CLAUDE_SENTINEL)
-                and not state.direct_dest and dest_key == "flash" and state.attempt == 1
-                and providers[state.profile.destinations["pro"].provider_name].auth != auth):
+                and _next_fallback(state, providers, exclude_auth=auth)):
             up.close()
-            print(f"  {auth} 401 -> login rejected after retry; {request_id} falls back to pro")
-            state.result = _fallback_result(state)
+            nxt = state.queue[state.queue_pos].dest
+            print(f"  {auth} 401 -> login rejected after retry; {request_id} fails over to "
+                  f"{nxt.provider_name},{nxt.model}")
             continue
 
         # A codex 200 for a non-streaming client: the upstream ran SSE (the
@@ -695,6 +732,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
                 protocol=state.protocol,
                 agent=state.agent,
                 codex_retried=state.codex_retried,
+                fallback_hops=state.fallback_hops,
             ))
             return web.json_response(response_body, status=response_status)
 
@@ -756,6 +794,7 @@ async def _proxy_flow(request: web.Request, endpoint_protocol: str) -> web.Strea
             protocol=state.protocol,
             agent=state.agent,
             codex_retried=state.codex_retried,
+            fallback_hops=state.fallback_hops,
         ))
 
         return resp
@@ -773,15 +812,73 @@ async def handle_responses(request: web.Request) -> web.StreamResponse:
     return await _proxy_flow(request, "openai-responses")
 
 
-def _fallback_result(state: _RoutingState) -> ResolveResult:
-    """Return a new resolve result for the pro fallback."""
-    pro_dest = state.profile.destinations["pro"]
-    return ResolveResult(
-        destination="pro",
-        model=pro_dest.model,
-        label=state.result.label + "→fallback",
+# Failover cooldown: in-process memory of recently quota-rejected candidates,
+# (provider, model) -> monotonic deadline. Advisory, never a hard wall — if
+# every remaining candidate cools down, the next one is tried anyway, because
+# a cheap probe beats erroring. Restarts clear it; that IS the recovery path.
+_COOLDOWN_UNTIL: dict[tuple[str, str], float] = {}
+_COOLDOWN_DEFAULT_S = 30   # a 429 without Retry-After: probe again after this
+_COOLDOWN_MAX_S = 60       # cap however long Retry-After asks for
+
+
+def _cooldown_mark(dest, up, status: int) -> None:
+    """Remember a quota-shaped rejection so upcoming requests skip this
+    candidate. Retry-After wins when present and parseable (HTTP-date forms
+    are not parsed — the 429 default applies); without it only a 429 counts:
+    a bare 5xx is usually a one-off blip, not a signal worth sidelining."""
+    secs = None
+    ra = up.headers.get("retry-after")
+    if ra is not None:
+        try:
+            secs = int(ra.strip())
+        except ValueError:
+            secs = None
+    if secs is None and status == 429:
+        secs = _COOLDOWN_DEFAULT_S
+    if not secs or secs < 1:
+        return
+    _COOLDOWN_UNTIL[(dest.provider_name, dest.model)] = (
+        time.monotonic() + min(secs, _COOLDOWN_MAX_S))
+
+
+def _cooling(dest) -> bool:
+    """True while a recent quota rejection's cooldown still holds."""
+    return time.monotonic() < _COOLDOWN_UNTIL.get((dest.provider_name, dest.model), 0.0)
+
+
+def _next_fallback(state: _RoutingState, providers: dict,
+                   exclude_auth: str | None = None) -> bool:
+    """Advance the failover queue to the next usable candidate; False when
+    exhausted (the caller then surfaces the current response or error).
+
+    Cooldown skips are advisory — all cooling means take the next one anyway;
+    exclude_auth is a hard filter — the 401 rescue must not land on another
+    candidate riding the same rejected login, it would only re-fail. Each
+    hop is stamped into the label, so the degradation is visible per request.
+    """
+    pick = None
+    for pos in range(state.queue_pos + 1, len(state.queue)):
+        cand = state.queue[pos]
+        if (exclude_auth is not None
+                and providers[cand.dest.provider_name].auth == exclude_auth):
+            continue
+        if pick is None:
+            pick = pos  # first candidate the auth filter allows (advisory floor)
+        if not _cooling(cand.dest):
+            pick = pos  # first awake candidate — the real choice
+            break
+    if pick is None:
+        return False
+    state.queue_pos = pick
+    cand = state.queue[pick]
+    state.result = ResolveResult(
+        destination=cand.tier,
+        model=cand.dest.model,
+        label=state.result.label + f"→fb:{cand.dest.provider_name},{cand.dest.model}",
         inspect=state.result.inspect,
     )
+    state.fallback_hops += 1
+    return True
 
 
 async def handle_count_tokens(request: web.Request) -> web.Response:
@@ -1279,6 +1376,16 @@ def _serve_warnings(providers: dict) -> None:
             print(warning)
 
 
+def _failover_chain(profile, tier: str) -> str:
+    """The banner's view of one tier's failover chain: declared backups in
+    order, or the implicit cross-tier hop (marked as such)."""
+    hops = [f"{d.provider_name}/{d.model}" for d in profile.backups.get(tier, [])]
+    if not hops:
+        other = "pro" if tier == "flash" else "flash"
+        hops = [f"{other} (implicit)"]
+    return " -> ".join(hops)
+
+
 async def _serve(host: str, port: int, providers: dict, profile, settings,
                  port_explicit: bool = False, background: bool = False) -> None:
     auto_line = _resolve_auto_threshold(profile, settings)
@@ -1311,6 +1418,8 @@ async def _serve(host: str, port: int, providers: dict, profile, settings,
         print(f"  overrides     -> {_overrides_line(profile.settings_overrides)}")
     print(f"  flash  -> {profile.destinations['flash'].provider_name}/{profile.destinations['flash'].model}")
     print(f"  pro    -> {profile.destinations['pro'].provider_name}/{profile.destinations['pro'].model}")
+    print(f"  failover      -> flash: {_failover_chain(profile, 'flash')}  |  "
+          f"pro: {_failover_chain(profile, 'pro')}")
     if auto_line is not None:
         print(auto_line)
     else:
@@ -1457,6 +1566,9 @@ async def _serve_gateway(host: str, port: int, port_explicit: bool = False,
             line += f"  L3>{e.profile.long_context_threshold:,}"
         if e.profile.rtk:
             line += "  rtk"
+        if e.profile.backups:
+            line += (f"  fb flash={_failover_chain(e.profile, 'flash')}"
+                     f" pro={_failover_chain(e.profile, 'pro')}")
         print(line)
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     print()

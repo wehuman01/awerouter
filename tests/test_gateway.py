@@ -688,3 +688,83 @@ class TestGatewayClientHints:
         hints = _gateway_client_hints(entries, None, "127.0.0.1", 20128)
         assert "ANTHROPIC_MODEL" not in hints  # bare names 400: no tier env lies
         assert "bare names are rejected" in hints
+
+
+# ---------------------------------------------------------------------------
+# Failover in gateway mode: aliases walk queues, direct forwards stay pinned
+# ---------------------------------------------------------------------------
+
+class TestGatewayFailover:
+    @pytest.fixture(autouse=True)
+    def _clear_cooldown(self):
+        from awerouter import server
+        server._COOLDOWN_UNTIL.clear()
+        yield
+        server._COOLDOWN_UNTIL.clear()
+
+    def test_alias_walks_declared_backups(self):
+        """'<profile>/auto' resolves through the smart pipeline and then walks
+        the profile's failover queue, same as single-profile serve."""
+        hits = []
+
+        async def t():
+            async def up(request):
+                body = await request.json()
+                hits.append(body["model"])
+                if body["model"] == "glm-flash":
+                    return web.json_response({"error": "quota"}, status=429)
+                return web.json_response({"model": body["model"]})
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                profile = RoutingProfile(
+                    "glm", "anthropic", 32,
+                    {"flash": Destination("glm", "glm-flash"),
+                     "pro": Destination("anthropic", "glm-pro")},
+                    backups={"flash": [Destination("glm", "glm-air")],
+                             "pro": [Destination("glm", "glm-max")]})
+                entries = {"glm": _GatewayEntry(
+                    profile=profile, settings=Settings(),
+                    providers={p: _direct_providers(up_server.port)[p]
+                               for p in ("anthropic",)})}
+                async with TestClient(TestServer(create_gateway_app(entries, "glm"))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "glm/auto", "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 200
+                    assert (await r.json())["model"] == "glm-air"
+            finally:
+                await up_server.close()
+        run(t())
+        assert hits == ["glm-flash", "glm-air"]
+
+    def test_direct_forward_never_fails_over(self):
+        """A pinned 'provider/<model>' forward that 429s passes the response
+        through — swapping the named model for another would not be what was asked for."""
+        calls = []
+
+        async def t():
+            async def up(request):
+                calls.append(1)
+                return web.json_response({"error": "quota"}, status=429)
+
+            up_app = web.Application()
+            up_app.router.add_post("/v1/messages", up)
+            up_server = TestServer(up_app)
+            await up_server.start_server()
+            try:
+                entries = {"glm": _entry("glm", "anthropic", "glm-flash", "glm-pro")}
+                async with TestClient(TestServer(
+                        create_gateway_app(entries, "glm", _direct_providers(up_server.port)))) as c:
+                    r = await c.post("/v1/messages", json={
+                        "model": "stepfun/step-3.7-flash",
+                        "messages": [{"content": "hi"}],
+                    })
+                    assert r.status == 429
+            finally:
+                await up_server.close()
+        run(t())
+        assert len(calls) == 1  # exactly one attempt: the pinned destination

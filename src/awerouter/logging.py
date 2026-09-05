@@ -69,6 +69,7 @@ def append(log: RequestLog) -> None:
             "protocol": log.protocol,
             "agent": log.agent,
             "codex_retried": log.codex_retried,
+            "fallback_hops": log.fallback_hops,
         }, ensure_ascii=False) + "\n")
 
 
@@ -134,6 +135,7 @@ def tail(n: int | None = 20) -> list[RequestLog]:
                 protocol=data.get("protocol", ""),
                 agent=data.get("agent", ""),
                 codex_retried=data.get("codex_retried", False),
+                fallback_hops=data.get("fallback_hops", 0),
             ))
         except json.JSONDecodeError:
             continue
@@ -167,7 +169,7 @@ def token_totals(since=None, profile=None) -> dict:
         if dest in out:
             out[dest]["requests"] += 1
             out[dest]["tokens"] += data.get("token_count", 0)
-        if "fallback" in data.get("label", ""):
+        if _is_fallback_label(data.get("label", "")):
             out["fallback"] += 1
     if not (out["flash"]["requests"] or out["pro"]["requests"]):
         return {}
@@ -403,7 +405,7 @@ def stats(since=None, profile=None) -> dict:
             bucket["protocol"] = data.get("protocol", "")
         bucket["requests"] += 1
         bucket["tokens"] += tokens
-        bucket["by_label"][label] = bucket["by_label"].get(label, 0) + 1
+        bucket["by_label"][_base_label(label)] = bucket["by_label"].get(_base_label(label), 0) + 1
         bucket["by_destination"][dest] = bucket["by_destination"].get(dest, 0) + 1
         bucket["by_provider"][prov] = bucket["by_provider"].get(prov, 0) + 1
         bucket["by_model"][model] = bucket["by_model"].get(model, 0) + 1
@@ -411,7 +413,7 @@ def stats(since=None, profile=None) -> dict:
         if isinstance(status, int) and status >= 400:
             bucket["errors"] += 1
             errors += 1
-        if "fallback" in label:
+        if _is_fallback_label(label):
             bucket["fallbacks"] += 1
             fallbacks += 1
         if dest == "flash":
@@ -469,15 +471,24 @@ def clear_logs() -> list:
 # toolEdit (pro below via L4, pro above via longContext).
 _L3_LABELS = frozenset({"default", "longContext", "image", "toolSearch"})
 _FALLBACK_SUFFIX = "→fallback"
+_FALLBACK_HOP = "→fb:"
+
+
+def _is_fallback_label(label: str) -> bool:
+    """True when the request failed over: legacy single '→fallback' suffix or
+    a multi-hop '→fb:provider,model' path."""
+    return _FALLBACK_SUFFIX in label or _FALLBACK_HOP in label
 
 
 def _base_label(label: str) -> str:
-    """Strip the flash→pro fallback suffix: the request was still L3-decided,
-    so it belongs in the calibration distribution (flash failing must not
-    shrink the sample set)."""
+    """Strip fallback hops (…): the request was still L3-decided, so it
+    belongs in the calibration distribution (flash failing must not shrink
+    the sample set), and by_label stats stay grouped by routing decision —
+    hop paths would fragment the table."""
     if label.endswith(_FALLBACK_SUFFIX):
         return label[: -len(_FALLBACK_SUFFIX)]
-    return label
+    cut = label.find(_FALLBACK_HOP)
+    return label if cut < 0 else label[:cut]
 
 
 def _l3_tokens(since=None, profile=None, discount: float = 0.3) -> list:

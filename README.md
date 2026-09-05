@@ -282,6 +282,8 @@ In gateway mode, a provider can also declare the models that may be selected dir
 
 `awerouter serve all` then exposes `stepfun/step-3.7-flash` as a fixed forward. It bypasses automatic routing, and undeclared models are rejected. Declare `models` separately in each protocol group; existing configurations do not need changes.
 
+A provider may also declare `"multimodal": true`. Failover queues are its only consumer: an image-bearing request never fails over to a provider that has not declared it — the image guard holds during failover, and undeclared means no (the safe direction).
+
 Three protocols are supported. `base_url` uses each native client's convention — copy it verbatim from your client config; awerouter appends the endpoint path the same way the native client would:
 
 | Protocol id         | `base_url` style | Endpoint |
@@ -509,6 +511,10 @@ Strategy, no secrets (safe to commit):
     "destinations": {
       "flash": "stepfun,step-3.7-flash",
       "pro":   "anthropic,claude-opus-5"
+    },
+    "backups": {
+      "flash": ["glm,glm-4.7-flash", "anthropic,claude-opus-5"],
+      "pro":   ["glm,glm-5.3"]
     }
   },
   "cc-pro-first": {
@@ -549,6 +555,8 @@ Settings keys, their defaults, and what each one steers (all of them settable gl
 
 `longContextThreshold` is an integer, or `"auto"` to calibrate it from this profile's own traffic: at every `serve` start, awerouter takes the `percentile` of the profile's L3 effective-token distribution over the trailing `windowDays` as the threshold. With fewer than `minSamples` L3 requests in the window (fresh profile, quiet week) the `fallbackThreshold` applies instead. All four knobs live in `settings.longContextAuto` and are optional — the banner always prints what was picked and why. Note the percentile sets the flash/pro *split*, not flash's capability ceiling: if your flash model degrades on very long contexts, keep a manual threshold.
 
+> **Failover queues (`backups`, quota-aware):** each destination key may declare an ordered failover queue — same `"provider,model"` strings as `destinations` (a bare string is a one-element queue). When the primary answers 429/408/5xx or a network error *before the first streamed byte*, the request walks its queue in order; smart routing itself never changes (the tier is the request's property — failover only swaps who serves it). Zero config, each tier carries one implicit cross-tier hop — flash→pro and pro→flash, answer over error, loudly stamped into the label. An explicit list **replaces** the implicit hop: what you wrote is exactly what runs (want pro at the end of the flash queue, list it). A 429 — or any response carrying `Retry-After` — puts that candidate on an in-process cooldown (Retry-After honored when parseable, else 30s; capped at 60s), so a dead quota window sticks traffic on the backup instead of taxing every request with a doomed first hit; it is advisory, and a restart clears it. An exhausted queue passes the last upstream response through untouched; a network-error 502 names every candidate tried. Every hop is stamped into the label (`background→fb:glm,glm-4.7-flash`) and counted as `fallback_hops` in the usage log. Image-bearing requests filter their queue on the provider's declared `multimodal` flag (see providers.json) — the image guard holds during failover too — and `provider/<model>` direct forwards stay pinned: a named model that 429s surfaces the 429, it never swaps horses.
+
 Keys reference `${ENV_VAR}` syntax. Missing env vars die with a clear message at startup.
 
 > **Profile-based routing:** `routing.json` groups configs under profile ids (like aweswitch). `awerouter serve run <profile>` starts one; with a single profile it auto-selects. `protocol` maps the profile to a providers.json group and decides which endpoint it serves — the serve banner prints the matching client env (`ANTHROPIC_BASE_URL` for Claude Code, `OPENAI_BASE_URL` / Codex `wire_api` for the openai protocols). It accepts a single id or a list: `"protocol": ["anthropic", "openai-chat"]` serves both wire protocols on one port — clients pick by endpoint path (`/v1/messages` vs `/v1/chat/completions`), each protocol forwards through its own provider group, and every destination provider must exist in each served group (per-protocol `base_url`s). Note: openai clients are single-model, so L2 tier labels effectively never fire for them — openai traffic routes by L1 + L3 with a flash default.
@@ -584,6 +592,8 @@ CC's `/model` picker sets the tier model id (c1/flash / c1/pro / c1/think). awer
 L4 is a consequence checkpoint, not a difficulty guess: the turn right *after* code changed is the review turn (verify, continue, report), so it goes to pro — flash drafts, pro reviews. The signal is the trailing parallel tool batch; any edit-class call in it marks the batch (`Edit`/`Write`/`NotebookEdit`/`apply_patch` etc., case-insensitive; shell-wrapped calls classified by command text). L4 sits below L3 on purpose: sessions above `longContextThreshold` stay pro, keeping the long-context crossing one-way flash→pro.
 
 All tool-keyed rules live in one block — `settings.toolRouting` (`webSearch`/`edit`) — and the serve banner prints the active mapping on one `tool -> ...` line.
+
+Failover queues sit under the pipeline, not in it: `resolve()` picks the tier, then that tier's queue — `[primary, backups...]`, or one implicit cross-tier hop (flash→pro, pro→flash) under zero config — decides who serves the request when the primary dies mid-attempt (429/quota, 5xx, network error; pre-stream only, since SSE cannot be undone). Routing decisions never re-run on failover; every hop is visible in the label. See "Failover queues" under routing.json.
 
 ## Image Bridge
 

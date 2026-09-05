@@ -27,7 +27,39 @@ over the checkpoint).
 from __future__ import annotations
 
 from awerouter.protocols import effective_tokens
-from awerouter.types import Destination, InspectResult, ResolveResult
+from awerouter.types import Candidate, Destination, InspectResult, ResolveResult
+
+
+def build_queue(dest_key: str, profile, feat: InspectResult,
+                providers: dict | None = None) -> tuple[Candidate, ...]:
+    """Expand a resolved tier into its ordered failover queue.
+
+    Zero config keeps one implicit cross-tier hop per tier (flash→pro is the
+    long-standing single-hop rescue; pro→flash answers over erroring — the
+    degradation is loud, stamped into the label of every request it saves).
+    An explicit backups list replaces the implicit hop for that tier: the
+    queue is exactly what was written, nothing appended.
+
+    The L1 image guard filters here too, not just in resolve: a model that
+    cannot see images must never receive them during failover either. The
+    primary always stands — resolve already made the image decision — only
+    fallback candidates need the capability check, against the provider's
+    declared 'multimodal' flag (undeclared = False, the safe direction).
+    """
+    dests = profile.destinations
+    declared = profile.backups.get(dest_key, [])
+    queue = [Candidate(dest_key, dests[dest_key])]
+    queue += [Candidate(dest_key, d) for d in declared]
+    if not declared:
+        other = "pro" if dest_key == "flash" else "flash"
+        queue.append(Candidate(other, dests[other]))
+    if feat.has_image and providers is not None:
+        # Keep the head; a backup the image guard cannot vouch for is dropped,
+        # never silently handed an image it cannot see.
+        queue = [queue[0]] + [
+            c for c in queue[1:] if providers[c.dest.provider_name].multimodal
+        ]
+    return tuple(queue)
 
 
 def resolve(

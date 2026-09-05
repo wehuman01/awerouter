@@ -282,6 +282,8 @@ aweskill 通过管理skills，让 agent **管理**路由；aweswitch 让你**启
 
 这样 `awerouter serve all` 会额外暴露 `stepfun/step-3.7-flash`。它是固定转发，绕过自动路由；未声明的模型不会被接受。`models` 按协议分别声明，旧配置不需要修改。
 
+provider 还可以声明 `"multimodal": true`。它的唯一消费方是回退队列：带图请求永远不会回退到没声明多模态的 provider——图片护栏在故障转移期间同样成立，未声明即视为否（安全方向）。
+
 支持三种协议。`base_url` 沿用各原生客户端的写法——从客户端配置里原样抄过来即可，awerouter 按原生客户端同样的规则拼接端点路径：
 
 | 协议 id | `base_url` 写法 | 端点 |
@@ -509,6 +511,10 @@ awerouter init step-glm-mm        # 需要设置 STEPFUN_AUTH_TOKEN 和 GLM_API_
     "destinations": {
       "flash": "stepfun,step-3.7-flash",
       "pro":   "anthropic,claude-opus-5"
+    },
+    "backups": {
+      "flash": ["glm,glm-4.7-flash", "anthropic,claude-opus-5"],
+      "pro":   ["glm,glm-5.3"]
     }
   },
   "cc-pro-first": {
@@ -549,6 +555,8 @@ settings 的每个键也都可以**直接写在 profile 体内**，与 `protocol
 
 `longContextThreshold` 可以是整数，也可以写 `"auto"`：每次 `serve` 启动时，awerouter 取该 profile 自己最近 `windowDays` 天 L3 有效 token 分布的 `percentile` 分位值作为阈值。窗口内 L3 请求数不足 `minSamples`（新 profile、流量清淡）时改用 `fallbackThreshold`。四个参数都在 `settings.longContextAuto` 里，全部可选——横幅每次都会打印选了什么、依据是什么。注意：分位值决定的是 flash/pro 的*分配比例*，不代表 flash 的能力上限——如果你的 flash 模型在超长上下文上明显退化，请继续用固定阈值。
 
+> **回退队列（`backups`，配额感知）：** 每个 destination 键都可以声明一条有序回退队列——写法与 `destinations` 相同的 `"provider,model"` 字符串（单个字符串等价于单元素队列）。主选在**首个流式字节之前**返回 429/408/5xx 或网络错误时，请求按队列顺序换下一个候选；智能路由本身不变（档位是请求的属性——回退只换服务者，不换档位）。零配置时每个档位各有一条隐式跨档跳转——flash→pro 与 pro→flash，宁可降级也要给出答案，且每次跳转都大声音地写进 label。显式列表**替换**隐式跳转：你写的就 exactly 是运行的（想让 flash 队列末尾兜底到 pro，就自己写上）。429——或任何带 `Retry-After` 的响应——会让该候选进入进程内冷却（可解析的 Retry-After 优先，否则 30 秒；上限 60 秒），配额耗尽的窗口期内流量会粘在备选上，而不是每个请求都先白撞一次死配额；冷却是建议性的，重启即清零。队列耗尽时把最后一个上游响应原样透传，绝不吞掉；网络错误的 502 会点名每一个试过的候选。每一跳都盖进 label（`background→fb:glm,glm-4.7-flash`）并计入用量日志的 `fallback_hops`。带图请求的队列会按 provider 声明的 `multimodal` 标志过滤（见 providers.json）——图片护栏在回退期间同样成立；`provider/<model>` 固定转发保持锁定：点名的模型 429 就返回 429，绝不偷换。
+
 密钥用 `${ENV_VAR}` 引用。缺失的环境变量在启动时报错退出。
 
 > **基于 profile 的路由：** `routing.json` 用 profile id 分组（类似 aweswitch）。`awerouter serve run <profile>` 启动其中一个；只有一个 profile 时自动选择。`protocol` 字段把 profile 映射到 providers.json 的分组，并决定它服务哪个端点——serve 横幅按协议打印对应客户端的环境变量（anthropic → Claude Code 的 `ANTHROPIC_BASE_URL`；openai 协议 → `OPENAI_BASE_URL` / Codex `wire_api`）。它可以写单个 id，也可以写列表：`"protocol": ["anthropic", "openai-chat"]` 让一个端口同时服务两种线协议——客户端按端点路径自选（`/v1/messages` 还是 `/v1/chat/completions`），每种协议走自己的 provider 组，且每个 destination provider 必须在每个被服务分组里都存在（各自协议的 `base_url`）。注意：openai 客户端是单 model 配置，L2 档位匹配基本不触发——openai 流量走 L1 + L3，默认 flash。
@@ -584,6 +592,8 @@ CC 的 `/model` 选择器设置 tier model id（c1/flash / c1/pro / c1/think）�
 L4 是后果检查点，不是难度猜测：代码刚被改写的**下一轮**是审查轮（验证、继续、交代），送 pro——flash 起草，pro 审查。信号取尾部并行工具批次，其中任何一个编辑类调用（`Edit`/`Write`/`NotebookEdit`/`apply_patch` 等，大小写不敏感；shell 包装的调用按命令文本分类）都会标记该批次。它排在 L3 之下是刻意的：超过 `longContextThreshold` 的会话留在 pro，flash→pro 的长上下文跨越保持单向。
 
 所有按工具路由的规则（含 L1 的 `webSearch`）统一放在 `settings.toolRouting`（`webSearch`/`edit`），serve 横幅用一行 `tool -> ...` 打印生效的映射。
+
+回退队列叠在流水线之下、不在流水线之内：`resolve()` 定档位，然后该档位的队列——`[主选, backups...]`，零配置时一条隐式跨档跳转（flash→pro、pro→flash）——在主选中途挂掉时（429/配额、5xx、网络错误；仅限流式开始前，SSE 无法撤回）决定谁来服务这个请求。回退不重跑路由决策；每一跳都体现在 label 里。详见 routing.json 一节的「回退队列」。
 
 ## 图片桥接
 
