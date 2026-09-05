@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.6.0
+
+Failover becomes first-class: routing destinations gain ordered `backups` queues with quota-aware cooldowns, providers declare a `multimodal` flag so the image guard survives failover, and gateway direct-forwards support a `pool` tag for same-model account rotation.
+
+### Added
+- Failover queues (`backups`) in `routing.json`: each destination key may declare an ordered failover queue — same `"provider,model"` strings as `destinations`. When the primary answers 429/408/5xx or a network error before the first streamed byte, the request walks its queue in order; smart routing itself never changes (the tier is the request's property — failover only swaps who serves it). Zero config, each tier carries one implicit cross-tier hop (flash→pro / pro→flash); an explicit list replaces it. A 429 or any response carrying `Retry-After` puts that candidate on an in-process cooldown (Retry-After honored when parseable, else 30s; capped at 60s). An exhausted queue passes the last upstream response through; a network-error 502 names every candidate tried. Every hop is stamped into the label (`background→fb:glm,glm-4.7-flash`) and counted as `fallback_hops` in the usage log.
+- Provider `multimodal` flag: image-bearing requests filter their failover queue on the provider's declared `multimodal` flag — the image guard holds during failover, and undeclared means no.
+- Provider `pool` tag for gateway direct-forwards: entries sharing a tag within one protocol group are the same vendor's accounts (same models, different keys). A gateway `provider/<model>` forward that 429s fails over to the **same model** on the next pool member — declaration-order wrapping from the named entry, so each account's overflow flows to the next. One tag per entry replaces mutual-backups lists; untagged entries stay pinned. Cooldowns, `→fb:` labels, `fallback_hops`, and the `multimodal` image guard all apply.
+- Track `rejected_auths` to avoid reusing dead logins within a request.
+
+### Fixed
+- Config load now validates that both `flash` and `pro` destinations are present.
+- Skip implicit hop when both tiers point to identical provider+model.
+- Scope cooldown keys by protocol so one protocol's 429 does not cool another's.
+- `git_diff` RTK filter defaults to a line cap; `git_status` handles long-form Untracked files.
+- Update-check is resilient to fetch exceptions (preserves cached `latestVersion` and records the check).
+
 ## v0.5.9
 
 Windows CI repair: since v0.5.5 the windows-latest CI legs have been red — v0.5.7's resident-service feature made `serve status` die on Windows, and the `_is_awerouter_process` tests assume a readable command line that Windows cannot provide.
